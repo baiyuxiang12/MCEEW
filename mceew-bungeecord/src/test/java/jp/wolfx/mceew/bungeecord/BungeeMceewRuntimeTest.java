@@ -36,8 +36,9 @@ class BungeeMceewRuntimeTest {
         assertSame(processor, harness.runtime.messageProcessor());
         assertEquals(List.of("query_jmaeqlist"),
                 harness.connector.attempt(0).socket().textMessages());
-        assertEquals(1, harness.backend.tasks.size());
-        harness.backend.run(0);
+        assertEquals(2, harness.backend.tasks.size(),
+                "bootstrap pacing and WebSocket liveness each own one delayed task");
+        harness.backend.run(harness.backend.lastTaskWithDelay(1200L, TimeUnit.MILLISECONDS));
         assertEquals(List.of("query_jmaeqlist", "query_cenceqlist"),
                 harness.connector.attempt(0).socket().textMessages());
     }
@@ -211,7 +212,8 @@ class BungeeMceewRuntimeTest {
     }
 
     private static void runAll(BungeeDelaySchedulerTest.FakeBackend backend) {
-        for (int index = 0; index < backend.tasks.size(); index++) {
+        int taskCount = backend.tasks.size();
+        for (int index = 0; index < taskCount; index++) {
             backend.run(index);
         }
     }

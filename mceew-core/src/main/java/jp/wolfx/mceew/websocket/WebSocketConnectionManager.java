@@ -3,11 +3,13 @@ package jp.wolfx.mceew.websocket;
 import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
 import java.net.http.WebSocketHandshakeException;
+import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -21,6 +23,18 @@ public final class WebSocketConnectionManager {
     static final String CENC_QUERY = "query_cenceqlist";
     static final long BOOTSTRAP_QUERY_INTERVAL_MILLIS = 1200L;
     static final List<String> BOOTSTRAP_QUERIES = List.of(JMA_QUERY, CENC_QUERY);
+    static final long CONNECT_TIMEOUT_MILLIS = 20_000L;
+    static final long KEEPALIVE_INTERVAL_MILLIS = 30_000L;
+    static final long KEEPALIVE_TIMEOUT_MILLIS = 15_000L;
+    static final long MAX_RECONNECT_DELAY_MILLIS = 60_000L;
+
+    enum ConnectionState {
+        DISCONNECTED,
+        CONNECTING,
+        CONNECTED,
+        RECONNECTING,
+        STOPPED
+    }
 
     @FunctionalInterface
     public interface Connector {
@@ -42,16 +56,20 @@ public final class WebSocketConnectionManager {
     private final DelayScheduler delayScheduler;
     private final Consumer<String> messageConsumer;
     private final Logger logger;
-    private final long reconnectDelay;
-    private final TimeUnit reconnectDelayUnit;
+    private final long initialReconnectDelayMillis;
 
     private long generation;
-    private boolean stopped = true;
+    private ConnectionState state = ConnectionState.STOPPED;
+    private long nextReconnectDelayMillis;
     private long bootstrapGeneration = -1L;
+    private long livenessSequence;
     private WebSocket activeSocket;
     private CompletableFuture<WebSocket> connecting;
+    private ScheduledAction scheduledConnectTimeout;
     private ScheduledAction scheduledReconnect;
     private ScheduledAction scheduledBootstrap;
+    private ScheduledAction scheduledLiveness;
+    private boolean awaitingLivenessResponse;
 
     public WebSocketConnectionManager(
             Connector connector,
@@ -65,42 +83,60 @@ public final class WebSocketConnectionManager {
         this.delayScheduler = Objects.requireNonNull(delayScheduler, "delayScheduler");
         this.messageConsumer = Objects.requireNonNull(messageConsumer, "messageConsumer");
         this.logger = Objects.requireNonNull(logger, "logger");
-        this.reconnectDelay = reconnectDelay;
-        this.reconnectDelayUnit = Objects.requireNonNull(reconnectDelayUnit, "reconnectDelayUnit");
+        Objects.requireNonNull(reconnectDelayUnit, "reconnectDelayUnit");
+        long configuredDelayMillis = reconnectDelayUnit.toMillis(reconnectDelay);
+        if (configuredDelayMillis <= 0L) {
+            throw new IllegalArgumentException("reconnect delay must be positive");
+        }
+        initialReconnectDelayMillis = Math.min(
+                configuredDelayMillis, MAX_RECONNECT_DELAY_MILLIS);
+        nextReconnectDelayMillis = initialReconnectDelayMillis;
     }
 
     public void start() {
         long token;
         synchronized (lock) {
-            if (!stopped) {
+            if (state != ConnectionState.STOPPED) {
                 return;
             }
-            stopped = false;
+            state = ConnectionState.DISCONNECTED;
+            nextReconnectDelayMillis = initialReconnectDelayMillis;
             token = ++generation;
         }
-        connect(token);
+        connect(token, false);
     }
 
     public void restart() {
         WebSocket oldSocket;
         CompletableFuture<WebSocket> oldConnection;
+        ScheduledAction oldConnectTimeout;
         ScheduledAction oldReconnect;
         ScheduledAction oldBootstrap;
+        ScheduledAction oldLiveness;
         long token;
         synchronized (lock) {
-            stopped = false;
+            state = ConnectionState.DISCONNECTED;
+            nextReconnectDelayMillis = initialReconnectDelayMillis;
             token = ++generation;
             oldSocket = activeSocket;
             activeSocket = null;
             oldConnection = connecting;
             connecting = null;
+            oldConnectTimeout = scheduledConnectTimeout;
+            scheduledConnectTimeout = null;
             oldReconnect = scheduledReconnect;
             scheduledReconnect = null;
             oldBootstrap = scheduledBootstrap;
             scheduledBootstrap = null;
+            oldLiveness = scheduledLiveness;
+            scheduledLiveness = null;
+            awaitingLivenessResponse = false;
+            livenessSequence++;
         }
+        cancel(oldConnectTimeout);
         cancel(oldReconnect);
         cancel(oldBootstrap);
+        cancel(oldLiveness);
         cancel(oldConnection);
         closeBeforeRestart(oldSocket, token);
     }
@@ -108,37 +144,58 @@ public final class WebSocketConnectionManager {
     public void stop() {
         WebSocket oldSocket;
         CompletableFuture<WebSocket> oldConnection;
+        ScheduledAction oldConnectTimeout;
         ScheduledAction oldReconnect;
         ScheduledAction oldBootstrap;
+        ScheduledAction oldLiveness;
         synchronized (lock) {
-            if (stopped && activeSocket == null && connecting == null
-                    && scheduledReconnect == null && scheduledBootstrap == null) {
+            if (state == ConnectionState.STOPPED && activeSocket == null && connecting == null
+                    && scheduledConnectTimeout == null && scheduledReconnect == null
+                    && scheduledBootstrap == null && scheduledLiveness == null) {
                 return;
             }
-            stopped = true;
+            state = ConnectionState.STOPPED;
             generation++;
             oldSocket = activeSocket;
             activeSocket = null;
             oldConnection = connecting;
             connecting = null;
+            oldConnectTimeout = scheduledConnectTimeout;
+            scheduledConnectTimeout = null;
             oldReconnect = scheduledReconnect;
             scheduledReconnect = null;
             oldBootstrap = scheduledBootstrap;
             scheduledBootstrap = null;
+            oldLiveness = scheduledLiveness;
+            scheduledLiveness = null;
+            awaitingLivenessResponse = false;
+            livenessSequence++;
         }
+        cancel(oldConnectTimeout);
         cancel(oldReconnect);
         cancel(oldBootstrap);
+        cancel(oldLiveness);
         cancel(oldConnection);
         closeWithoutReconnect(oldSocket, "Plugin disabled");
     }
 
-    private void connect(long token) {
-        ConnectionListener listener = new ConnectionListener(token);
+    private void connect(long token, boolean reconnectAttempt) {
+        synchronized (lock) {
+            if (!isCurrentGeneration(token)) {
+                return;
+            }
+            state = ConnectionState.CONNECTING;
+        }
+        if (reconnectAttempt) {
+            logger.info("Reconnecting to WebSocket API...");
+        }
+
+        ConnectionListener listener = new ConnectionListener(token, reconnectAttempt);
         CompletableFuture<WebSocket> future;
         try {
             future = Objects.requireNonNull(connector.connect(listener), "connector future");
         } catch (Throwable error) {
-            handleConnectFailure(token, error);
+            handleConnectFailure(token, null, error, reconnectAttempt);
             return;
         }
 
@@ -151,24 +208,23 @@ public final class WebSocketConnectionManager {
         }
         if (stale) {
             future.cancel(true);
+            return;
         }
 
         future.whenComplete((socket, error) -> {
             if (error != null) {
-                handleConnectFailure(token, error);
+                handleConnectFailure(token, future, error, reconnectAttempt);
                 return;
             }
-            boolean current;
+            boolean completedStale;
             synchronized (lock) {
-                current = isCurrentGeneration(token);
-                if (connecting == future) {
-                    connecting = null;
-                }
+                completedStale = !isCurrentGeneration(token);
             }
-            if (!current && socket != null) {
+            if (completedStale && socket != null) {
                 socket.abort();
             }
         });
+        scheduleConnectTimeout(token, future, reconnectAttempt);
     }
 
     private void closeBeforeRestart(WebSocket socket, long token) {
@@ -208,22 +264,83 @@ public final class WebSocketConnectionManager {
                 return;
             }
         }
-        connect(token);
+        connect(token, false);
     }
 
-    private void handleConnectFailure(long token, Throwable error) {
+    private void scheduleConnectTimeout(
+            long token,
+            CompletableFuture<WebSocket> future,
+            boolean reconnectAttempt
+    ) {
+        Throwable scheduleFailure = null;
         synchronized (lock) {
-            if (!isCurrentGeneration(token)) {
+            if (!isCurrentGeneration(token) || connecting != future || activeSocket != null) {
                 return;
             }
-            connecting = null;
+            try {
+                scheduledConnectTimeout = delayScheduler.schedule(
+                        () -> handleConnectTimeout(token, future, reconnectAttempt),
+                        CONNECT_TIMEOUT_MILLIS,
+                        TimeUnit.MILLISECONDS);
+            } catch (Throwable error) {
+                scheduleFailure = error;
+            }
         }
-        logFailure("Failed to connect to WebSocket API.", error);
-        scheduleReconnect(token);
+        if (scheduleFailure != null) {
+            if (handleConnectFailure(token, future, scheduleFailure, reconnectAttempt)) {
+                future.cancel(true);
+            }
+        }
     }
 
-    private void handleConnectionFailure(long token, WebSocket socket, Throwable error, String message) {
+    private void handleConnectTimeout(
+            long token,
+            CompletableFuture<WebSocket> future,
+            boolean reconnectAttempt
+    ) {
+        if (handleConnectFailure(token, future,
+                new TimeoutException("WebSocket connection attempt timed out"),
+                reconnectAttempt)) {
+            future.cancel(true);
+        }
+    }
+
+    private boolean handleConnectFailure(
+            long token,
+            CompletableFuture<WebSocket> future,
+            Throwable error,
+            boolean reconnectAttempt
+    ) {
+        ScheduledAction connectTimeout;
+        long reconnectToken;
+        synchronized (lock) {
+            if (!isCurrentGeneration(token) || activeSocket != null
+                    || (future != null && connecting != future)) {
+                return false;
+            }
+            connecting = null;
+            connectTimeout = scheduledConnectTimeout;
+            scheduledConnectTimeout = null;
+            state = ConnectionState.DISCONNECTED;
+            reconnectToken = ++generation;
+        }
+        cancel(connectTimeout);
+        logFailure(reconnectAttempt
+                ? "WebSocket reconnect failed."
+                : "Failed to connect to WebSocket API.", error);
+        scheduleReconnect(reconnectToken);
+        return true;
+    }
+
+    private void handleConnectionFailure(
+            long token,
+            WebSocket socket,
+            Throwable error,
+            String message
+    ) {
         ScheduledAction bootstrap;
+        ScheduledAction liveness;
+        long reconnectToken;
         synchronized (lock) {
             if (!isCurrentSocket(token, socket)) {
                 return;
@@ -231,39 +348,162 @@ public final class WebSocketConnectionManager {
             activeSocket = null;
             bootstrap = scheduledBootstrap;
             scheduledBootstrap = null;
+            liveness = scheduledLiveness;
+            scheduledLiveness = null;
+            awaitingLivenessResponse = false;
+            livenessSequence++;
+            state = ConnectionState.DISCONNECTED;
+            reconnectToken = ++generation;
         }
         cancel(bootstrap);
+        cancel(liveness);
         logFailure(message, error);
         socket.abort();
-        scheduleReconnect(token);
+        scheduleReconnect(reconnectToken);
     }
 
     private void scheduleReconnect(long token) {
+        Throwable scheduleFailure = null;
+        long delayMillis;
         synchronized (lock) {
             if (!isCurrentGeneration(token) || scheduledReconnect != null) {
                 return;
             }
-            logger.warning("Trying to reconnect to WebSocket API in "
-                    + reconnectDelay + " " + reconnectDelayUnit.toString().toLowerCase() + ".");
+            delayMillis = nextReconnectDelayMillis;
+            nextReconnectDelayMillis = Math.min(
+                    MAX_RECONNECT_DELAY_MILLIS,
+                    delayMillis > MAX_RECONNECT_DELAY_MILLIS / 2L
+                            ? MAX_RECONNECT_DELAY_MILLIS
+                            : delayMillis * 2L);
+            state = ConnectionState.RECONNECTING;
             try {
                 scheduledReconnect = delayScheduler.schedule(
-                        () -> runReconnect(token), reconnectDelay, reconnectDelayUnit);
+                        () -> runReconnect(token), delayMillis, TimeUnit.MILLISECONDS);
             } catch (Throwable error) {
-                logger.log(Level.WARNING, "Unable to schedule WebSocket reconnect.", error);
+                state = ConnectionState.DISCONNECTED;
+                scheduleFailure = error;
             }
         }
+        if (scheduleFailure != null) {
+            logger.log(Level.WARNING, "Unable to schedule WebSocket reconnect.", scheduleFailure);
+            return;
+        }
+        logger.warning("Scheduling WebSocket reconnect in " + formatDelay(delayMillis) + ".");
     }
 
     private void runReconnect(long token) {
-        long nextToken;
         synchronized (lock) {
             if (!isCurrentGeneration(token) || scheduledReconnect == null) {
                 return;
             }
             scheduledReconnect = null;
-            nextToken = ++generation;
         }
-        connect(nextToken);
+        connect(token, true);
+    }
+
+    private void scheduleKeepAlivePing(long token, WebSocket socket) {
+        Throwable scheduleFailure = null;
+        synchronized (lock) {
+            if (!isCurrentSocket(token, socket) || scheduledLiveness != null
+                    || awaitingLivenessResponse) {
+                return;
+            }
+            long sequence = ++livenessSequence;
+            try {
+                scheduledLiveness = delayScheduler.schedule(
+                        () -> sendKeepAlivePing(token, socket, sequence),
+                        KEEPALIVE_INTERVAL_MILLIS,
+                        TimeUnit.MILLISECONDS);
+            } catch (Throwable error) {
+                scheduleFailure = error;
+            }
+        }
+        if (scheduleFailure != null) {
+            handleConnectionFailure(token, socket, scheduleFailure,
+                    "WebSocket connection lost: unable to schedule its liveness check.");
+        }
+    }
+
+    private void sendKeepAlivePing(long token, WebSocket socket, long sequence) {
+        synchronized (lock) {
+            if (!isCurrentSocket(token, socket) || sequence != livenessSequence
+                    || scheduledLiveness == null) {
+                return;
+            }
+            scheduledLiveness = null;
+            awaitingLivenessResponse = true;
+        }
+
+        CompletableFuture<WebSocket> send;
+        try {
+            ByteBuffer payload = ByteBuffer.allocate(Long.BYTES);
+            payload.putLong(sequence);
+            payload.flip();
+            send = Objects.requireNonNull(socket.sendPing(payload), "ping future");
+        } catch (Throwable error) {
+            handleConnectionFailure(token, socket, error,
+                    "WebSocket connection lost: keepalive ping could not be sent.");
+            return;
+        }
+
+        scheduleKeepAliveTimeout(token, socket, sequence);
+        send.whenComplete((ignored, error) -> {
+            if (error != null) {
+                handleConnectionFailure(token, socket, error,
+                        "WebSocket connection lost: keepalive ping failed.");
+            }
+        });
+    }
+
+    private void scheduleKeepAliveTimeout(long token, WebSocket socket, long sequence) {
+        Throwable scheduleFailure = null;
+        synchronized (lock) {
+            if (!isCurrentSocket(token, socket) || sequence != livenessSequence
+                    || !awaitingLivenessResponse || scheduledLiveness != null) {
+                return;
+            }
+            try {
+                scheduledLiveness = delayScheduler.schedule(
+                        () -> handleKeepAliveTimeout(token, socket, sequence),
+                        KEEPALIVE_TIMEOUT_MILLIS,
+                        TimeUnit.MILLISECONDS);
+            } catch (Throwable error) {
+                scheduleFailure = error;
+            }
+        }
+        if (scheduleFailure != null) {
+            handleConnectionFailure(token, socket, scheduleFailure,
+                    "WebSocket connection lost: unable to schedule its keepalive timeout.");
+        }
+    }
+
+    private void handleKeepAliveTimeout(long token, WebSocket socket, long sequence) {
+        synchronized (lock) {
+            if (!isCurrentSocket(token, socket) || sequence != livenessSequence
+                    || !awaitingLivenessResponse || scheduledLiveness == null) {
+                return;
+            }
+            scheduledLiveness = null;
+            awaitingLivenessResponse = false;
+        }
+        handleConnectionFailure(token, socket,
+                new TimeoutException("No WebSocket activity followed the keepalive ping"),
+                "WebSocket connection lost: keepalive response timed out.");
+    }
+
+    private void recordInboundActivity(long token, WebSocket socket) {
+        ScheduledAction timeout;
+        synchronized (lock) {
+            if (!isCurrentSocket(token, socket) || !awaitingLivenessResponse) {
+                return;
+            }
+            awaitingLivenessResponse = false;
+            livenessSequence++;
+            timeout = scheduledLiveness;
+            scheduledLiveness = null;
+        }
+        cancel(timeout);
+        scheduleKeepAlivePing(token, socket);
     }
 
     private void sendBootstrapQuery(long token, WebSocket socket, int queryIndex) {
@@ -337,7 +577,7 @@ public final class WebSocketConnectionManager {
     }
 
     private boolean isCurrentGeneration(long token) {
-        return !stopped && token == generation;
+        return state != ConnectionState.STOPPED && token == generation;
     }
 
     private boolean isCurrentSocket(long token, WebSocket socket) {
@@ -352,6 +592,19 @@ public final class WebSocketConnectionManager {
                     + response.statusCode() + ", HTTP version: " + response.version() + ".");
         }
         logger.log(Level.WARNING, message, unwrap(error));
+    }
+
+    private String formatDelay(long delayMillis) {
+        if (delayMillis % 1000L == 0L) {
+            return (delayMillis / 1000L) + "s";
+        }
+        return delayMillis + "ms";
+    }
+
+    ConnectionState connectionState() {
+        synchronized (lock) {
+            return state;
+        }
     }
 
     private Throwable unwrap(Throwable error) {
@@ -387,14 +640,18 @@ public final class WebSocketConnectionManager {
 
     private final class ConnectionListener implements WebSocket.Listener {
         private final long token;
+        private final boolean reconnectAttempt;
         private final StringBuilder messageBuffer = new StringBuilder();
 
-        private ConnectionListener(long token) {
+        private ConnectionListener(long token, boolean reconnectAttempt) {
             this.token = token;
+            this.reconnectAttempt = reconnectAttempt;
         }
 
         @Override
         public void onOpen(WebSocket socket) {
+            ScheduledAction connectTimeout;
+            ScheduledAction reconnect;
             boolean startBootstrap;
             synchronized (lock) {
                 if (!isCurrentGeneration(token) || (activeSocket != null && activeSocket != socket)) {
@@ -406,16 +663,27 @@ public final class WebSocketConnectionManager {
                 }
                 activeSocket = socket;
                 connecting = null;
+                connectTimeout = scheduledConnectTimeout;
+                scheduledConnectTimeout = null;
+                reconnect = scheduledReconnect;
+                scheduledReconnect = null;
+                nextReconnectDelayMillis = initialReconnectDelayMillis;
+                state = ConnectionState.CONNECTED;
                 startBootstrap = bootstrapGeneration != token;
                 if (startBootstrap) {
                     bootstrapGeneration = token;
                 }
             }
-            logger.info("Connected to WebSocket API.");
+            cancel(connectTimeout);
+            cancel(reconnect);
+            logger.info(reconnectAttempt
+                    ? "Reconnected to WebSocket API."
+                    : "Connected to WebSocket API.");
             requestNext(token, socket);
             if (startBootstrap) {
                 sendBootstrapQuery(token, socket, 0);
             }
+            scheduleKeepAlivePing(token, socket);
         }
 
         @Override
@@ -425,6 +693,7 @@ public final class WebSocketConnectionManager {
                     return CompletableFuture.completedFuture(null);
                 }
             }
+            recordInboundActivity(token, socket);
             try {
                 messageBuffer.append(data);
                 if (last) {
@@ -447,8 +716,31 @@ public final class WebSocketConnectionManager {
         }
 
         @Override
+        public CompletionStage<?> onBinary(WebSocket socket, ByteBuffer data, boolean last) {
+            recordInboundActivity(token, socket);
+            requestNext(token, socket);
+            return CompletableFuture.completedFuture(null);
+        }
+
+        @Override
+        public CompletionStage<?> onPing(WebSocket socket, ByteBuffer message) {
+            recordInboundActivity(token, socket);
+            requestNext(token, socket);
+            return CompletableFuture.completedFuture(null);
+        }
+
+        @Override
+        public CompletionStage<?> onPong(WebSocket socket, ByteBuffer message) {
+            recordInboundActivity(token, socket);
+            requestNext(token, socket);
+            return CompletableFuture.completedFuture(null);
+        }
+
+        @Override
         public CompletionStage<?> onClose(WebSocket socket, int statusCode, String reason) {
             ScheduledAction bootstrap;
+            ScheduledAction liveness;
+            long reconnectToken;
             synchronized (lock) {
                 if (!isCurrentSocket(token, socket)) {
                     return CompletableFuture.completedFuture(null);
@@ -456,22 +748,25 @@ public final class WebSocketConnectionManager {
                 activeSocket = null;
                 bootstrap = scheduledBootstrap;
                 scheduledBootstrap = null;
+                liveness = scheduledLiveness;
+                scheduledLiveness = null;
+                awaitingLivenessResponse = false;
+                livenessSequence++;
+                state = ConnectionState.DISCONNECTED;
+                reconnectToken = ++generation;
             }
             cancel(bootstrap);
-            if (statusCode == WebSocket.NORMAL_CLOSURE) {
-                logger.info("WebSocket API connection closed normally.");
-            } else {
-                logger.warning("WebSocket API connection closed unexpectedly (status "
-                        + statusCode + "): " + reason);
-            }
-            scheduleReconnect(token);
+            cancel(liveness);
+            logger.warning("WebSocket connection lost: closed with status "
+                    + statusCode + (reason.isEmpty() ? "." : " (" + reason + ")."));
+            scheduleReconnect(reconnectToken);
             return CompletableFuture.completedFuture(null);
         }
 
         @Override
         public void onError(WebSocket socket, Throwable error) {
             handleConnectionFailure(token, socket, error,
-                    "WebSocket API connection failed.");
+                    "WebSocket connection lost: receive loop failed.");
         }
 
         private void requestNext(long token, WebSocket socket) {

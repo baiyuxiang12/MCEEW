@@ -130,6 +130,16 @@ class BungeeDelaySchedulerTest {
         void run(int index) {
             tasks.get(index).run();
         }
+
+        int lastTaskWithDelay(long delay, TimeUnit unit) {
+            for (int index = tasks.size() - 1; index >= 0; index--) {
+                FakeTask task = tasks.get(index);
+                if (task.delay == delay && task.unit == unit) {
+                    return index;
+                }
+            }
+            throw new AssertionError("No task scheduled with delay " + delay + " " + unit);
+        }
     }
 
     static final class FakeTask implements BungeeDelayScheduler.TaskHandle {

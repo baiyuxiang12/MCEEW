@@ -193,6 +193,196 @@ class WebSocketConnectionManagerTest {
     }
 
     @Test
+    void silentHalfOpenConnectionIsDetectedAndRecoveredWithoutCloseCallback() {
+        FakeDelayScheduler scheduler = new FakeDelayScheduler();
+        FakeConnector connector = new FakeConnector(false);
+        WebSocketConnectionManager manager = manager(connector, scheduler);
+        manager.start();
+
+        Attempt original = connector.attempts.get(0);
+        scheduler.advanceBy(WebSocketConnectionManager.KEEPALIVE_INTERVAL_MILLIS);
+        assertEquals(1, original.socket.pingCalls.get());
+
+        scheduler.advanceBy(WebSocketConnectionManager.KEEPALIVE_TIMEOUT_MILLIS);
+        assertTrue(original.socket.aborted);
+        assertEquals(WebSocketConnectionManager.ConnectionState.RECONNECTING,
+                manager.connectionState());
+
+        scheduler.advanceBy(TimeUnit.SECONDS.toMillis(5));
+
+        assertEquals(2, connector.attempts.size(),
+                "a silent half-open connection must not remain active indefinitely");
+        assertEquals(WebSocketConnectionManager.ConnectionState.CONNECTED,
+                manager.connectionState());
+    }
+
+    @Test
+    void pongConfirmsLivenessAndPreventsReconnect() {
+        FakeDelayScheduler scheduler = new FakeDelayScheduler();
+        FakeConnector connector = new FakeConnector(false);
+        WebSocketConnectionManager manager = manager(connector, scheduler);
+        manager.start();
+
+        Attempt attempt = connector.attempts.get(0);
+        scheduler.advanceBy(WebSocketConnectionManager.KEEPALIVE_INTERVAL_MILLIS);
+        attempt.listener.onPong(attempt.socket, ByteBuffer.allocate(0));
+        scheduler.advanceBy(WebSocketConnectionManager.KEEPALIVE_TIMEOUT_MILLIS);
+
+        assertEquals(1, connector.attempts.size());
+        assertFalse(attempt.socket.aborted);
+        assertEquals(WebSocketConnectionManager.ConnectionState.CONNECTED,
+                manager.connectionState());
+    }
+
+    @Test
+    void keepaliveSendFailureUsesTheSameSingleReconnectPath() {
+        FakeDelayScheduler scheduler = new FakeDelayScheduler();
+        FakeConnector connector = new FakeConnector(false);
+        WebSocketConnectionManager manager = manager(connector, scheduler);
+        manager.start();
+
+        Attempt attempt = connector.attempts.get(0);
+        attempt.socket.pingFailure = new IllegalStateException("socket output disappeared");
+        scheduler.advanceBy(WebSocketConnectionManager.KEEPALIVE_INTERVAL_MILLIS);
+
+        assertTrue(attempt.socket.aborted);
+        assertEquals(1, scheduler.pendingWithDelay(TimeUnit.SECONDS.toMillis(5)));
+        attempt.listener.onClose(attempt.socket, 1006, "duplicate close");
+        assertEquals(1, scheduler.pendingWithDelay(TimeUnit.SECONDS.toMillis(5)));
+    }
+
+    @Test
+    void connectionAttemptTimeoutSchedulesOneReconnect() {
+        FakeDelayScheduler scheduler = new FakeDelayScheduler();
+        List<Attempt> attempts = new ArrayList<>();
+        AtomicInteger connectionCalls = new AtomicInteger();
+        WebSocketConnectionManager.Connector connector = listener -> {
+            FakeWebSocket socket = new FakeWebSocket(false);
+            attempts.add(new Attempt(listener, socket));
+            if (connectionCalls.getAndIncrement() == 0) {
+                return new CompletableFuture<>();
+            }
+            listener.onOpen(socket);
+            return CompletableFuture.completedFuture(socket);
+        };
+        WebSocketConnectionManager manager = manager(connector, scheduler, null);
+        manager.start();
+
+        assertEquals(WebSocketConnectionManager.ConnectionState.CONNECTING,
+                manager.connectionState());
+        scheduler.advanceBy(WebSocketConnectionManager.CONNECT_TIMEOUT_MILLIS);
+
+        assertEquals(WebSocketConnectionManager.ConnectionState.RECONNECTING,
+                manager.connectionState());
+        assertEquals(1, scheduler.pendingWithDelay(TimeUnit.SECONDS.toMillis(5)));
+
+        Attempt timedOut = attempts.get(0);
+        timedOut.listener.onOpen(timedOut.socket);
+        assertTrue(timedOut.socket.aborted,
+                "a late open callback from the timed-out generation must be rejected");
+        assertEquals(1, scheduler.pendingWithDelay(TimeUnit.SECONDS.toMillis(5)),
+                "a stale open callback must not cancel the planned replacement");
+
+        scheduler.advanceBy(TimeUnit.SECONDS.toMillis(5));
+
+        assertEquals(2, attempts.size());
+        assertEquals(WebSocketConnectionManager.ConnectionState.CONNECTED,
+                manager.connectionState());
+    }
+
+    @Test
+    void openWinningTheTimeoutRaceKeepsTheEstablishedConnection() {
+        FakeDelayScheduler scheduler = new FakeDelayScheduler();
+        List<Attempt> attempts = new ArrayList<>();
+        CompletableFuture<WebSocket> connection = new CompletableFuture<>();
+        WebSocketConnectionManager manager = manager(listener -> {
+            FakeWebSocket socket = new FakeWebSocket(false);
+            attempts.add(new Attempt(listener, socket));
+            return connection;
+        }, scheduler, null);
+        manager.start();
+
+        FakeScheduledAction connectTimeout = scheduler.lastScheduled();
+        Attempt attempt = attempts.get(0);
+        attempt.listener.onOpen(attempt.socket);
+        scheduler.runIgnoringCancellation(connectTimeout);
+
+        assertFalse(connection.isCancelled());
+        assertFalse(attempt.socket.aborted);
+        assertEquals(WebSocketConnectionManager.ConnectionState.CONNECTED,
+                manager.connectionState());
+        assertEquals(0, scheduler.pendingWithDelay(TimeUnit.SECONDS.toMillis(5)));
+        assertTrue(connection.complete(attempt.socket));
+    }
+
+    @Test
+    void repeatedReconnectFailuresBackOffExponentiallyAndCapAtOneMinute() {
+        FakeDelayScheduler scheduler = new FakeDelayScheduler();
+        AtomicInteger connectionCalls = new AtomicInteger();
+        RecordingHandler logs = new RecordingHandler();
+        WebSocketConnectionManager manager = manager(listener -> {
+            connectionCalls.incrementAndGet();
+            CompletableFuture<WebSocket> failed = new CompletableFuture<>();
+            failed.completeExceptionally(new IllegalStateException("simulated outage"));
+            return failed;
+        }, scheduler, logs);
+        manager.start();
+
+        long[] expectedDelays = {5L, 10L, 20L, 40L, 60L, 60L};
+        for (long seconds : expectedDelays) {
+            long delayMillis = TimeUnit.SECONDS.toMillis(seconds);
+            assertEquals(1, scheduler.pendingWithDelay(delayMillis));
+            scheduler.advanceBy(delayMillis);
+        }
+
+        assertEquals(expectedDelays.length + 1, connectionCalls.get());
+        assertEquals(1, scheduler.pendingWithDelay(TimeUnit.SECONDS.toMillis(60)));
+        assertTrue(logs.contains("WebSocket reconnect failed."));
+        manager.stop();
+    }
+
+    @Test
+    void successfulReconnectResetsBackoffAndReceiveErrorCannotDuplicateIt() {
+        FakeDelayScheduler scheduler = new FakeDelayScheduler();
+        List<Attempt> attempts = new ArrayList<>();
+        AtomicInteger connectionCalls = new AtomicInteger();
+        RecordingHandler logs = new RecordingHandler();
+        WebSocketConnectionManager.Connector connector = listener -> {
+            int call = connectionCalls.getAndIncrement();
+            FakeWebSocket socket = new FakeWebSocket(false);
+            attempts.add(new Attempt(listener, socket));
+            if (call == 1) {
+                CompletableFuture<WebSocket> failed = new CompletableFuture<>();
+                failed.completeExceptionally(new IllegalStateException("first retry failed"));
+                return failed;
+            }
+            listener.onOpen(socket);
+            return CompletableFuture.completedFuture(socket);
+        };
+        WebSocketConnectionManager manager = manager(connector, scheduler, logs);
+        manager.start();
+
+        Attempt original = attempts.get(0);
+        original.listener.onError(original.socket, new IllegalStateException("receive failed"));
+        original.listener.onClose(original.socket, 1006, "duplicate close");
+        scheduler.advanceBy(TimeUnit.SECONDS.toMillis(5));
+        assertEquals(1, scheduler.pendingWithDelay(TimeUnit.SECONDS.toMillis(10)));
+
+        scheduler.advanceBy(TimeUnit.SECONDS.toMillis(10));
+        Attempt recovered = attempts.get(2);
+        assertEquals(WebSocketConnectionManager.ConnectionState.CONNECTED,
+                manager.connectionState());
+        assertTrue(logs.contains("WebSocket connection lost: receive loop failed."));
+        assertTrue(logs.contains("Scheduling WebSocket reconnect in 5s."));
+        assertTrue(logs.contains("Reconnecting to WebSocket API..."));
+        assertTrue(logs.contains("Reconnected to WebSocket API."));
+
+        recovered.listener.onClose(recovered.socket, 1006, "next outage");
+        assertEquals(1, scheduler.pendingWithDelay(TimeUnit.SECONDS.toMillis(5)),
+                "successful reconnect must reset the exponential backoff");
+    }
+
+    @Test
     void staleOnOpenCannotStartAnotherBootstrap() {
         FakeDelayScheduler scheduler = new FakeDelayScheduler();
         FakeConnector connector = new FakeConnector(false);
@@ -543,11 +733,13 @@ class WebSocketConnectionManagerTest {
         private final List<String> textMessages = new ArrayList<>();
         private final CompletableFuture<WebSocket> firstTextSend = new CompletableFuture<>();
         private final AtomicInteger closeCalls = new AtomicInteger();
+        private final AtomicInteger pingCalls = new AtomicInteger();
         private final AtomicInteger requestCalls = new AtomicInteger();
         private final boolean holdFirstTextSend;
         private int pendingTextSends;
         private int maxPendingTextSends;
         private boolean aborted;
+        private Throwable pingFailure;
 
         private FakeWebSocket(boolean holdFirstTextSend) {
             this.holdFirstTextSend = holdFirstTextSend;
@@ -573,6 +765,12 @@ class WebSocketConnectionManagerTest {
 
         @Override
         public CompletableFuture<WebSocket> sendPing(ByteBuffer message) {
+            pingCalls.incrementAndGet();
+            if (pingFailure != null) {
+                CompletableFuture<WebSocket> failed = new CompletableFuture<>();
+                failed.completeExceptionally(pingFailure);
+                return failed;
+            }
             return CompletableFuture.completedFuture(this);
         }
 

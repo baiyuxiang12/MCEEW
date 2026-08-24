@@ -347,7 +347,8 @@ class VelocityTransactionalReloadTest {
         assertEquals(1, harness.runtimeCreations.get());
         assertEquals(1, harness.connector.connectionCount());
         assertEquals(1, runtime.coreLogHandlerCount());
-        assertEquals(0, harness.plugin.delayScheduler().ownedTaskCount());
+        assertEquals(1, harness.plugin.delayScheduler().ownedTaskCount(),
+                "the active runtime owns exactly one WebSocket liveness task");
 
         List<MCEEWVelocity.ReloadOutcome> first = new ArrayList<>();
         List<MCEEWVelocity.ReloadOutcome> second = new ArrayList<>();

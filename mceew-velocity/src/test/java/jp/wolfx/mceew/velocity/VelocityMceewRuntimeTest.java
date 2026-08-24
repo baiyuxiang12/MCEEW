@@ -35,8 +35,8 @@ class VelocityMceewRuntimeTest {
         assertSame(processorIdentity, runtime.messageProcessor());
         assertEquals(List.of("query_jmaeqlist"),
                 connector.attempt(0).socket().textMessages());
-        assertEquals(1200L, platform.lastDelay());
-        assertEquals(TimeUnit.MILLISECONDS, platform.lastDelayUnit());
+        assertTrue(platform.tasks().stream().anyMatch(task ->
+                task.delay() == 1200L && task.delayUnit() == TimeUnit.MILLISECONDS));
 
         platform.runAll();
 

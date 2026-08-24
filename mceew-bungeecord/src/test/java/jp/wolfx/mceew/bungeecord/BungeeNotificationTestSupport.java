@@ -60,7 +60,8 @@ final class BungeeNotificationTestSupport {
     }
 
     static void runAll(BungeeDelaySchedulerTest.FakeBackend backend) {
-        for (int index = 0; index < backend.tasks.size(); index++) {
+        int taskCount = backend.tasks.size();
+        for (int index = 0; index < taskCount; index++) {
             backend.run(index);
         }
     }

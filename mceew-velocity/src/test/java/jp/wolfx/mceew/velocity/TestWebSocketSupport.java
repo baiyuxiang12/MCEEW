@@ -24,7 +24,7 @@ final class TestWebSocketSupport {
 
         @Override
         public CompletableFuture<WebSocket> connect(WebSocket.Listener listener) {
-            Attempt attempt = new Attempt(listener, new RecordingWebSocket());
+            Attempt attempt = new Attempt(listener, new RecordingWebSocket(listener));
             attempts.add(attempt);
             if (autoOpen) {
                 attempt.open();
@@ -80,10 +80,15 @@ final class TestWebSocketSupport {
     }
 
     static final class RecordingWebSocket implements WebSocket {
+        private final WebSocket.Listener listener;
         private final List<String> textMessages = new ArrayList<>();
         private final AtomicInteger closeCalls = new AtomicInteger();
         private final AtomicInteger requestCalls = new AtomicInteger();
         private volatile boolean aborted;
+
+        private RecordingWebSocket(WebSocket.Listener listener) {
+            this.listener = listener;
+        }
 
         @Override
         public CompletableFuture<WebSocket> sendText(CharSequence data, boolean last) {
@@ -98,6 +103,7 @@ final class TestWebSocketSupport {
 
         @Override
         public CompletableFuture<WebSocket> sendPing(ByteBuffer message) {
+            listener.onPong(this, message.asReadOnlyBuffer());
             return CompletableFuture.completedFuture(this);
         }
 

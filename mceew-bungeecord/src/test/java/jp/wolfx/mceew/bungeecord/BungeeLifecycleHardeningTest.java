@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.IntConsumer;
@@ -316,7 +317,7 @@ class BungeeLifecycleHardeningTest {
         BungeeMceewRuntime runtime = harness.runtime();
         TestWebSocketSupport.RecordingWebSocket firstSocket =
                 harness.connector.attempt(0).socket();
-        int bootstrapTask = harness.backend.tasks.size() - 1;
+        int bootstrapTask = harness.backend.lastTaskWithDelay(1200L, TimeUnit.MILLISECONDS);
 
         harness.config.set(snapshot(true, "none"));
         assertEquals(BungeePluginShell.ReloadOutcome.SUCCESS, harness.reload());
@@ -409,8 +410,8 @@ class BungeeLifecycleHardeningTest {
         assertEquals(6, harness.connector.connectionCount());
         assertEquals(56, harness.sinks.size());
         assertEquals(55, harness.sinks.stream().filter(TrackingSink::isClosed).count());
-        assertEquals(1, harness.scheduler.ownedTaskCount(),
-                "only the current runtime's paced bootstrap remains pending");
+        assertEquals(2, harness.scheduler.ownedTaskCount(),
+                "the current runtime owns paced bootstrap and WebSocket liveness tasks");
 
         harness.shell.close();
         assertEquals(56, harness.sinks.stream().filter(TrackingSink::isClosed).count());
