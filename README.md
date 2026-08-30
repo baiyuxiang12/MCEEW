@@ -3,6 +3,96 @@
 A real-time Earthquake Early Warning (EEW) plugin for Minecraft servers and
 Velocity, BungeeCord, and Waterfall proxy networks.
 
+---
+
+## 本 Fork 新增：玩家 S 波倒计时（地震预警）
+
+> 在原版 MCEEW 基础上，为 **Bukkit 服务器**（Spigot/Paper/Folia）增加按玩家位置计算的地震 S 波到达倒计时：
+> 定位玩家 → 按震中距推算 S 波到达时间 → BossBar / Title 显示剩余秒数。
+
+### 功能特性
+
+* **按玩家 IP 定位**，S 波到达倒计时（BossBar 进度条 / 强震 Title 每秒刷新）
+* **在线 IP 定位增强（可选）**：腾讯位置服务，精确到区县并返回精确坐标；
+  离线表（ip2region）只到城市级，在线定位失败自动降级，不影响倒计时
+* **烈度衰减估算**：`I = a + b·M + c·ln(R+d)`（R 为震源距），按玩家位置算烈度，
+  而不是震中的最大烈度
+* **分级措辞**：烈度 3 有感 / 4 明显 / 5 较强 / 6 强震 / 7 毁灭性，避免小题大做
+* **智能过滤**：距离过滤随震级放宽（M4 → 250km … M10 → 6000km）、低烈度过滤、
+  盲区兜底（近震中立即提示"已到达"）
+* **多源支持**：日本 / 四川 / 福建 / 台湾 / 中国国家台网 / 重庆 的 EEW 均可触发
+
+### 安装
+
+1. 将 `MCEEW-x.y.z.jar` 放入 `plugins/`，启动一次生成配置
+2. 将 [ip2region.xdb](https://github.com/lionsoul2014/ip2region) 放入 `plugins/MCEEW/ip2region.xdb`
+   （离线定位数据源，约 10MB，城市级）
+
+### 配置（config.yml → `Countdown` 段）
+
+```yaml
+Countdown:
+  enable: true                    # 总开关（必须显式写 true）
+  min-magnitude: 4.0              # 低于该震级不提醒
+  min-intensity: 1.0              # 玩家位置预估烈度低于该值不提醒
+  max-distance-km: 500            # 基础最大提醒距离
+  max-distance-by-magnitude:      # 距离随震级放宽
+    - "4.0: 250"
+    - "10.0: 6000"
+  s-wave-speed:                   # S 波分段速度模型 (km/s)
+    - "0-50: 3.6"
+    - "300-10000: 4.5"
+  intensity-attenuation:          # 烈度衰减系数
+    enable: true
+    a: 3.0
+    b: 1.5
+    c: -2.058
+    d: 10
+  ip-db-path: "plugins/MCEEW/ip2region.xdb"
+  # 兜底位置（玩家定位不到时，如内网/局域网玩家）。三种格式任选：
+  #   "城市名"（如 成都市）、"纬度,经度"（如 30.67,104.06）、
+  #   "IP地址"（如 117.189.5.195，按该 IP 的在线/离线定位结果兜底，内网玩家即按服务器出口位置算）
+  fallback-location: ""
+  online-location:                # 在线 IP 定位增强（可选）
+    enable: false
+    provider: "tencent"
+    key: ""                       # 腾讯位置服务 WebServiceAPI key
+    sk: ""                        # 签名密钥（控制台"密钥管理"），带 sk 自动计算 sig
+    cache-hours: 24               # 每 IP 缓存小时数（同 IP 一天只查一次）
+  bossbar:                        # 文案/颜色/到达提示等，见 config.yml 内注释
+    # ...
+```
+
+**腾讯 key 申请**：https://lbs.qq.com/ → 控制台 → 应用管理 → 创建应用 → 添加 WebServiceAPI。
+个人开发者配额约 6000 次/天（各接口独立），本插件用量为"玩家数/天"，远低于配额；
+配额满或失败时自动降级离线表，倒计时功能不受影响。
+
+### 新命令（OP）
+
+| 命令 | 说明 |
+|---|---|
+| `/eew test region <省> [市] [区] <震级> [玩家名]` | 在指定地点模拟地震（如 `/eew test region 贵州省 贵阳市 开阳县 8.0`）。**末尾加玩家名则只发倒计时给该玩家，且跳过全局广播**（如 `... 8.0 Steve`） |
+| `/eew test ip <ip>` | 调试在线 IP 定位，显示该 IP 的定位结果（如 `/eew test ip 117.189.5.195`） |
+| `/eew test yibin77` | 动态时间的宜宾 M7.7 模拟（保证倒计时为正） |
+| `/eew test cenc / cq / sc / ...` | 原版各源测试（全部在线玩家） |
+
+### 定位优先级与工作机制
+
+1. 玩家加入时**异步预取**在线 IP 定位（私有 IP 跳过，不浪费调用）
+2. EEW 到达时按 `玩家在线定位缓存 → 离线表 → fallback(在线缓存 → 离线解析)` 取坐标
+3. 震源距 = √(水平距离² + 深度²)，S 波到达时间 = 震源距 ÷ 分段速度
+4. 烈度按衰减公式估算；本地烈度 ≥ 阈值（默认 3）走强震 Title（每秒刷新），否则走 BossBar
+
+### 注意事项
+
+* 倒计时依赖服务器时钟：`ETA = 发震时间 + 传播时间 − 服务器时钟`，请确保服务器开启 NTP 对时
+* 与 CraftEngine 等发包拦截插件共存时，请先实测 Title/BossBar 是否被拦截
+* 配置会被 MCEEW 自动规范化重写：改坏 YAML 会被"自动修复"并重置字段，
+  改完务必确认 `Countdown.enable` 仍为 `true`
+* 衰减公式为全国折中校准值（基于真实手机预警记录），游戏内提示够用，不等于官方播报
+
+---
+
 ## Features
 
 * Receives JMA, CENC, Sichuan, Fujian, CWA, and Chongqing earthquake warnings
