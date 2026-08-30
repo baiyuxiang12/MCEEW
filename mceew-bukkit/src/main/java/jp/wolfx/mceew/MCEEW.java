@@ -12,8 +12,13 @@ import jp.wolfx.mceew.notification.NotificationProfile;
 import jp.wolfx.mceew.notification.NotificationSource;
 import jp.wolfx.mceew.scheduler.PlatformScheduler;
 import jp.wolfx.mceew.websocket.WebSocketConnectionManager;
+import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bstats.bukkit.Metrics;
 
@@ -30,7 +35,7 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.net.http.HttpClient;
 
-public final class MCEEW extends JavaPlugin {
+public final class MCEEW extends JavaPlugin implements Listener {
     private static final WolfxMessageRouter MESSAGE_ROUTER = new WolfxMessageRouter();
     private boolean jpEewBoolean;
     private boolean scEewBoolean;
@@ -95,6 +100,7 @@ public final class MCEEW extends JavaPlugin {
     private BukkitNotificationDispatcher notificationDispatcher;
     private WebSocketConnectionManager webSocketManager;
     private ConfigManager configManager;
+    private jp.wolfx.mceew.countdown.CountdownManager countdownManager;
 
     @Override
     public void onEnable() {
@@ -119,12 +125,23 @@ public final class MCEEW extends JavaPlugin {
         if (!prepareAndLoadConfiguration()) {
             throw new IllegalStateException("Unable to prepare MCEEW configuration");
         }
+        countdownManager = new jp.wolfx.mceew.countdown.CountdownManager(this, platformScheduler);
+        countdownManager.load();
+        getServer().getPluginManager().registerEvents(this, this);
         getLogger().info(platformScheduler.isFolia()
                 ? "Using Folia API for scheduler."
                 : "Using Bukkit API for scheduler.");
         webSocketManager.start();
         platformScheduler.runAsync(this::updater);
         new Metrics(this, 17261);
+    }
+
+    /** 玩家加入时异步预取在线 IP 定位（缓存命中后 EEW 即可用区县级坐标）。 */
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        if (countdownManager != null) {
+            countdownManager.prefetchPlayerLocation(event.getPlayer());
+        }
     }
 
     private void eewTest(int flag) {
@@ -142,6 +159,7 @@ public final class MCEEW extends JavaPlugin {
             String type = "最終報";
             String originTime = getDate("yyyy/MM/dd HH:mm:ss", timeFormat, "Asia/Tokyo", originTimeStr);
             jmaEewAction(flags, reportTime, originTime, num, lat, lon, region, mag, depth, getShindoColor(shindo), type);
+            triggerCountdown("JMA", lat, lon, depth, mag, shindo, originTimeStr, "yyyy/MM/dd HH:mm:ss", "Asia/Tokyo", region);
         } else if (flag == 2) {
             String originTimeStr = "2024-02-28 21:23:30";
             String reportTime = "2024-02-28 21:23:37";
@@ -154,6 +172,7 @@ public final class MCEEW extends JavaPlugin {
             String intensity = "5";
             String originTime = getDate("yyyy-MM-dd HH:mm:ss", timeFormat, "Asia/Shanghai", originTimeStr);
             scEewAction(reportTime, originTime, num, lat, lon, region, mag, depth, getIntensityColor(intensity));
+            triggerCountdown("SICHUAN", lat, lon, depth, mag, intensity, originTimeStr, "yyyy-MM-dd HH:mm:ss", "Asia/Shanghai", region);
         } else if (flag == 3) {
             String originTimeStr = "2024-02-29 13:26:28";
             String reportTime = "2024-02-29 13:27:40";
@@ -165,6 +184,7 @@ public final class MCEEW extends JavaPlugin {
             String type = "最終報";
             String originTime = getDate("yyyy-MM-dd HH:mm:ss", timeFormat, "Asia/Shanghai", originTimeStr);
             fjEewAction(reportTime, originTime, num, lat, lon, region, mag, type);
+            triggerCountdown("FUJIAN", lat, lon, null, mag, null, originTimeStr, "yyyy-MM-dd HH:mm:ss", "Asia/Shanghai", region);
         } else if (flag == 4) {
             String originTimeStr = "2024-04-03 07:58:10";
             String reportTime = "2024-04-03 07:58:27";
@@ -177,6 +197,7 @@ public final class MCEEW extends JavaPlugin {
             String shindo = "6弱";
             String originTime = getDate("yyyy-MM-dd HH:mm:ss", timeFormat, "Asia/Shanghai", originTimeStr);
             cwaEewAction(reportTime, originTime, num, lat, lon, region, mag, depth, getShindoColor(shindo));
+            triggerCountdown("CWA", lat, lon, depth, mag, shindo, originTimeStr, "yyyy-MM-dd HH:mm:ss", "Asia/Shanghai", region);
         } else if (flag == 5) {
             String originTimeStr = "2025-09-12 05:50:58";
             String reportTime = "2025-09-12 05:50:58";
@@ -189,6 +210,7 @@ public final class MCEEW extends JavaPlugin {
             String intensity = "6.1";
             String originTime = getDate("yyyy-MM-dd HH:mm:ss", timeFormat, "Asia/Shanghai", originTimeStr);
             cencEewAction(reportTime, originTime, num, lat, lon, region, mag, depth, getIntensityColor(intensity));
+            triggerCountdown("CENC", lat, lon, depth, mag, intensity, originTimeStr, "yyyy-MM-dd HH:mm:ss", "Asia/Shanghai", region);
         } else if (flag == 6) {
             String originTimeStr = "2026-08-07 13:08:30";
             String reportTime = "2026-08-07 13:08:30";
@@ -201,6 +223,22 @@ public final class MCEEW extends JavaPlugin {
             String intensity = "6.6";
             String originTime = getDate("yyyy-MM-dd HH:mm:ss", timeFormat, "Asia/Shanghai", originTimeStr);
             cqEewAction(reportTime, originTime, num, lat, lon, region, mag, depth, getIntensityColor(intensity));
+            triggerCountdown("CHONGQING", lat, lon, depth, mag, intensity, originTimeStr, "yyyy-MM-dd HH:mm:ss", "Asia/Shanghai", region);
+        } else if (flag == 7) {
+            // 测试专用：宜宾 M7.7，发震时间动态取 now-5s，保证倒计时 ETA 为正
+            String originTimeStr = java.time.LocalDateTime.now().minusSeconds(5)
+                    .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            String reportTime = originTimeStr;
+            String num = "1";
+            String lat = "28.77";
+            String lon = "104.62";
+            String region = "四川宜宾市";
+            String mag = "7.7";
+            String depth = "10km";
+            String intensity = "8";
+            String originTime = getDate("yyyy-MM-dd HH:mm:ss", timeFormat, "Asia/Shanghai", originTimeStr);
+            cencEewAction(reportTime, originTime, num, lat, lon, region, mag, depth, getIntensityColor(intensity));
+            triggerCountdown("CENC", lat, lon, depth, mag, intensity, originTimeStr, "yyyy-MM-dd HH:mm:ss", "Asia/Shanghai", region);
         } else {
             String flags = "予報";
             String originTimeStr = "2024/02/29 18:35:38";
@@ -215,6 +253,7 @@ public final class MCEEW extends JavaPlugin {
             String type = "";
             String originTime = getDate("yyyy/MM/dd HH:mm:ss", timeFormat, "Asia/Tokyo", originTimeStr);
             jmaEewAction(flags, reportTime, originTime, num, lat, lon, region, mag, depth, getShindoColor(shindo), type);
+            triggerCountdown("JMA", lat, lon, depth, mag, shindo, originTimeStr, "yyyy/MM/dd HH:mm:ss", "Asia/Tokyo", region);
         }
         broadcastMessage();
     }
@@ -395,6 +434,14 @@ public final class MCEEW extends JavaPlugin {
         String shindo = event.getMaximumIntensity();
         String originTime = getDate("yyyy/MM/dd HH:mm:ss", timeFormat, "Asia/Tokyo", event.getOriginTime());
         if (isFresh(reportTime, "yyyy/MM/dd HH:mm:ss", ZoneId.of("Asia/Tokyo"))) {
+            if (event.isCancelled()) {
+                if (countdownManager != null) {
+                    countdownManager.onCancel();
+                }
+            } else {
+                triggerCountdown("JMA", lat, lon, event.getDepth(), mag, shindo,
+                        event.getOriginTime(), "yyyy/MM/dd HH:mm:ss", "Asia/Tokyo", region);
+            }
             jmaEewAction(flag, reportTime, originTime, num, lat, lon, region, mag, depth, getShindoColor(shindo), type);
         }
     }
@@ -449,6 +496,8 @@ public final class MCEEW extends JavaPlugin {
         String depth = LegacyTextFormatter.depthKilometers(event.getDepth());
         String originTime = getDate("yyyy-MM-dd HH:mm:ss", timeFormat, "Asia/Shanghai", event.getOriginTime());
         if (isFresh(reportTime, "yyyy-MM-dd HH:mm:ss", ZoneId.of("Asia/Shanghai"))) {
+            triggerCountdown("SICHUAN", lat, lon, event.getDepth(), mag, intensity,
+                    event.getOriginTime(), "yyyy-MM-dd HH:mm:ss", "Asia/Shanghai", region);
             scEewAction(reportTime, originTime, num, lat, lon, region, mag, depth, getIntensityColor(intensity));
         }
     }
@@ -463,6 +512,8 @@ public final class MCEEW extends JavaPlugin {
         String mag = event.getMagnitude();
         String originTime = getDate("yyyy-MM-dd HH:mm:ss", timeFormat, "Asia/Shanghai", event.getOriginTime());
         if (isFresh(reportTime, "yyyy-MM-dd HH:mm:ss", ZoneId.of("Asia/Shanghai"))) {
+            triggerCountdown("FUJIAN", lat, lon, null, mag, null,
+                    event.getOriginTime(), "yyyy-MM-dd HH:mm:ss", "Asia/Shanghai", region);
             fjEewAction(reportTime, originTime, num, lat, lon, region, mag, type);
         }
     }
@@ -478,6 +529,8 @@ public final class MCEEW extends JavaPlugin {
         String shindo = event.getMaximumIntensity();
         String originTime = getDate("yyyy-MM-dd HH:mm:ss", timeFormat, "Asia/Shanghai", event.getOriginTime());
         if (isFresh(reportTime, "yyyy-MM-dd HH:mm:ss", ZoneId.of("Asia/Shanghai"))) {
+            triggerCountdown("CWA", lat, lon, event.getDepth(), mag, shindo,
+                    event.getOriginTime(), "yyyy-MM-dd HH:mm:ss", "Asia/Shanghai", region);
             cwaEewAction(reportTime, originTime, num, lat, lon, region, mag, depth, getShindoColor(shindo));
         }
     }
@@ -493,6 +546,8 @@ public final class MCEEW extends JavaPlugin {
         String depth = LegacyTextFormatter.depthKilometers(event.getDepth());
         String originTime = getDate("yyyy-MM-dd HH:mm:ss", timeFormat, "Asia/Shanghai", event.getOriginTime());
         if (isFresh(reportTime, "yyyy-MM-dd HH:mm:ss", ZoneId.of("Asia/Shanghai"))) {
+            triggerCountdown("CENC", lat, lon, event.getDepth(), mag, intensity,
+                    event.getOriginTime(), "yyyy-MM-dd HH:mm:ss", "Asia/Shanghai", region);
             cencEewAction(reportTime, originTime, num, lat, lon, region, mag, depth, getIntensityColor(intensity));
         }
     }
@@ -508,6 +563,8 @@ public final class MCEEW extends JavaPlugin {
         String depth = LegacyTextFormatter.depthKilometers(event.getDepth());
         String originTime = getDate("yyyy-MM-dd HH:mm:ss", timeFormat, "Asia/Shanghai", event.getOriginTime());
         if (isFresh(reportTime, "yyyy-MM-dd HH:mm:ss", ZoneId.of("Asia/Shanghai"))) {
+            triggerCountdown("CHONGQING", lat, lon, event.getDepth(), mag, intensity,
+                    event.getOriginTime(), "yyyy-MM-dd HH:mm:ss", "Asia/Shanghai", region);
             cqEewAction(reportTime, originTime, num, lat, lon, region, mag, depth, getIntensityColor(intensity));
         }
     }
@@ -652,19 +709,122 @@ public final class MCEEW extends JavaPlugin {
                 } else if (args[1].equalsIgnoreCase("cq")) {
                     eewTest(6);
                     return true;
+                } else if (args[1].equalsIgnoreCase("yibin77")) {
+                    eewTest(7);
+                    return true;
+                } else {
+                    sendEewTestHelp(sender);
+                    return true;
                 }
+            } else if (args[1].equalsIgnoreCase("ip") && args.length == 3) {
+                // /eew test ip <ip> —— 在线 IP 定位调试（验证腾讯 key / 区县精度）
+                if (countdownManager == null) {
+                    sender.sendMessage("§c[MCEEW] Countdown module is not loaded.");
+                    return true;
+                }
+                final String ip = args[2];
+                sender.sendMessage("§a[MCEEW] 查询在线定位: " + ip + " ...");
+                countdownManager.lookupIpAsync(ip, r -> {
+                    if (r == null) {
+                        sender.sendMessage("§c[MCEEW] 在线定位失败或未启用"
+                                + "（检查 Countdown.online-location 的 enable 与 key）");
+                    } else {
+                        sender.sendMessage("§a[MCEEW] 在线定位结果: " + r);
+                    }
+                });
+                return true;
+            } else if (args[1].equalsIgnoreCase("region") && args.length >= 4) {
+                // /eew test region <省> [市] [区] <震级> [玩家名]
+                // 最后一个参数非数字时视为玩家名，模拟只发给该玩家（不打扰其他人）
+                double mag;
+                String playerName = null;
+                int lastIdx;
+                try {
+                    mag = Double.parseDouble(args[args.length - 1]);
+                    lastIdx = args.length - 1;
+                } catch (NumberFormatException e) {
+                    if (args.length < 5) {
+                        sender.sendMessage("§c[MCEEW] 用法: /eew test region <省> [市] [区] <震级> [玩家名]");
+                        return true;
+                    }
+                    playerName = args[args.length - 1];
+                    try {
+                        mag = Double.parseDouble(args[args.length - 2]);
+                    } catch (NumberFormatException e2) {
+                        sender.sendMessage("§c[MCEEW] 震级格式错误: " + args[args.length - 2]);
+                        return true;
+                    }
+                    lastIdx = args.length - 2;
+                }
+                int parts = lastIdx - 2; // 地区名个数: 去掉 "test region" 和 震级(及玩家名)
+                if (parts < 1 || parts > 3) {
+                    sender.sendMessage("§c[MCEEW] 地区名最多 3 个: 省 市 区");
+                    return true;
+                }
+                String province = null, city = null, district = null;
+                StringBuilder region = new StringBuilder();
+                for (int i = 2; i < lastIdx; i++) {
+                    region.append(args[i]);
+                    if (i == 2) province = args[i];
+                    if (i == 3) city = args[i];
+                    if (i == 4) district = args[i];
+                }
+                Player target = null;
+                if (playerName != null) {
+                    target = Bukkit.getPlayerExact(playerName);
+                    if (target == null || !target.isOnline()) {
+                        sender.sendMessage("§c[MCEEW] 玩家 " + playerName + " 不在线");
+                        return true;
+                    }
+                }
+                double[] coords = countdownManager != null
+                        ? countdownManager.resolveRegion(province, city, district)
+                        : null;
+                if (coords == null) {
+                    sender.sendMessage("§c[MCEEW] 未找到地区坐标: " + region
+                            + "（试试不带\"省/市/区\"后缀、或只用 区名/市名）");
+                    return true;
+                }
+                if (mag <= 0) {
+                    sender.sendMessage("§c[MCEEW] 震级必须大于 0");
+                    return true;
+                }
+                String originTimeStr = java.time.LocalDateTime.now().minusSeconds(5)
+                        .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+                String lat = String.valueOf(coords[0]);
+                String lon = String.valueOf(coords[1]);
+                String depth = "10km";
+                String intensity = "8";
+                String originTime = getDate("yyyy-MM-dd HH:mm:ss", timeFormat, "Asia/Shanghai", originTimeStr);
+                // 指定玩家名时只发倒计时给目标，跳过全局广播/Title/警报声，不打扰其他人
+                if (target == null) {
+                    cencEewAction(originTimeStr, originTime, "1", lat, lon, region.toString(), String.valueOf(mag), depth, getIntensityColor(intensity));
+                }
+                triggerCountdown("CENC", lat, lon, depth, String.valueOf(mag), intensity,
+                        originTimeStr, "yyyy-MM-dd HH:mm:ss", "Asia/Shanghai", region.toString(), target);
+                sender.sendMessage("§a[MCEEW] 已模拟震中: " + region + " (M" + mag + ") @ "
+                        + String.format("%.3f", coords[0]) + ", " + String.format("%.3f", coords[1])
+                        + (target != null ? " §7(仅发送给 " + target.getName() + ")" : ""));
+                return true;
             } else {
-                sender.sendMessage("§a[MCEEW] §3/eew test forecast§a - Send JMA forecast EEW test.");
-                sender.sendMessage("§a[MCEEW] §3/eew test alert§a - Send JMA alert EEW test.");
-                sender.sendMessage("§a[MCEEW] §3/eew test sc§a - Send Sichuan EEW test.");
-                sender.sendMessage("§a[MCEEW] §3/eew test fj§a - Send Taiwan/Fujian EEW test.");
-                sender.sendMessage("§a[MCEEW] §3/eew test cwa§a - Send Taiwan CWA EEW test.");
-                sender.sendMessage("§a[MCEEW] §3/eew test cenc§a - Send China CENC EEW test.");
-                sender.sendMessage("§a[MCEEW] §3/eew test cq§a - Send Chongqing EEW test.");
+                sendEewTestHelp(sender);
                 return true;
             }
         }
         return false;
+    }
+
+    private void sendEewTestHelp(CommandSender sender) {
+        sender.sendMessage("§a[MCEEW] §3/eew test forecast§a - Send JMA forecast EEW test.");
+        sender.sendMessage("§a[MCEEW] §3/eew test alert§a - Send JMA alert EEW test.");
+        sender.sendMessage("§a[MCEEW] §3/eew test sc§a - Send Sichuan EEW test.");
+        sender.sendMessage("§a[MCEEW] §3/eew test fj§a - Send Taiwan/Fujian EEW test.");
+        sender.sendMessage("§a[MCEEW] §3/eew test cwa§a - Send Taiwan CWA EEW test.");
+        sender.sendMessage("§a[MCEEW] §3/eew test cenc§a - Send China CENC EEW test.");
+        sender.sendMessage("§a[MCEEW] §3/eew test cq§a - Send Chongqing EEW test.");
+        sender.sendMessage("§a[MCEEW] §3/eew test yibin77§a - Send Yibin M7.7 test.");
+        sender.sendMessage("§a[MCEEW] §3/eew test ip <ip>§a - Test online IP location (e.g. /eew test ip 117.189.5.195).");
+        sender.sendMessage("§a[MCEEW] §3/eew test region <省> [市] [区] <震级> [玩家名]§a - Simulate quake at a region (e.g. /eew test region 四川省 成都市 武侯区 7.0 ; 末尾加玩家名只发给他: /eew test region 贵州省 贵阳市 开阳县 8.0 baiyuxiang12).");
     }
 
     private synchronized boolean prepareAndLoadConfiguration() {
@@ -682,6 +842,28 @@ public final class MCEEW extends JavaPlugin {
                     "Configuration was prepared but could not be loaded into the runtime.", error);
             return false;
         }
+    }
+
+    private void triggerCountdown(String source, String lat, String lon, String depth,
+                                  String mag, String intensity, String rawOrigin,
+                                  String pattern, String zone, String region) {
+        triggerCountdown(source, lat, lon, depth, mag, intensity, rawOrigin, pattern, zone, region, null);
+    }
+
+    private void triggerCountdown(String source, String lat, String lon, String depth,
+                                  String mag, String intensity, String rawOrigin,
+                                  String pattern, String zone, String region, Player target) {
+        if (countdownManager == null) {
+            return;
+        }
+        countdownManager.onEew(
+                source,
+                jp.wolfx.mceew.countdown.CountdownManager.parseDoubleSafe(lat, Double.NaN),
+                jp.wolfx.mceew.countdown.CountdownManager.parseDoubleSafe(lon, Double.NaN),
+                jp.wolfx.mceew.countdown.CountdownManager.parseDepthKm(depth),
+                jp.wolfx.mceew.countdown.CountdownManager.parseDoubleSafe(mag, 0),
+                jp.wolfx.mceew.countdown.CountdownManager.parseDoubleSafe(intensity, -1),
+                rawOrigin, pattern, zone, region, target);
     }
 
     private void loadRuntimeConfiguration() {
@@ -741,12 +923,18 @@ public final class MCEEW extends JavaPlugin {
         cqAlertSoundType = getConfig().getString("Sound.Chongqing.type");
         cqAlertSoundVolume = getConfig().getDouble("Sound.Chongqing.volume");
         cqAlertSoundPitch = getConfig().getDouble("Sound.Chongqing.pitch");
+        if (countdownManager != null) {
+            countdownManager.load();
+        }
     }
 
     @Override
     public void onDisable() {
         if (webSocketManager != null) {
             webSocketManager.stop();
+        }
+        if (countdownManager != null) {
+            countdownManager.shutdown();
         }
         if (platformScheduler != null) {
             platformScheduler.cancelTasks();
