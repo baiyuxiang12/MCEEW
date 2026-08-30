@@ -94,6 +94,9 @@ public final class CountdownManager {
     private Ip2RegionSearcher searcher;
     private OnlineLocationProvider onlineLocation;
     private final Map<String, double[]> cityCoords = new HashMap<>();
+    private final Map<String, double[]> globalCities = new HashMap<>();   // "CC|省|市" / "CC|市" / "CC|省" -> 坐标（GeoNames）
+    private final Map<String, double[]> globalCountries = new HashMap<>(); // "CC" -> 国家中心坐标
+    private final Map<String, String> countryCodeByName = new HashMap<>(); // 国家名（英文小写/中文）-> ISO 码
 
     private final Map<UUID, ActiveCountdown> active = new HashMap<>();
     private final Map<UUID, BossBar> playerBars = new HashMap<>();
@@ -225,6 +228,46 @@ public final class CountdownManager {
             }
         } catch (Exception e) {
             logger.warning("Failed to load city_coords.json: " + e.getMessage());
+        }
+
+        // 全球坐标表（GeoNames）：海外 IP（英文 国家|省|市）离线定位用，国家中心兜底
+        globalCities.clear();
+        globalCountries.clear();
+        countryCodeByName.clear();
+        try (InputStream in = plugin.getResource("global_geo.json")) {
+            if (in != null) {
+                try (InputStreamReader reader = new InputStreamReader(in, StandardCharsets.UTF_8)) {
+                    com.google.gson.JsonObject raw = (com.google.gson.JsonObject) parseJson(reader);
+                    com.google.gson.JsonObject countries = raw.getAsJsonObject("countries");
+                    for (Map.Entry<String, com.google.gson.JsonElement> e : countries.entrySet()) {
+                        com.google.gson.JsonObject v = e.getValue().getAsJsonObject();
+                        double lat = v.get("lat").getAsDouble();
+                        double lon = v.get("lon").getAsDouble();
+                        String iso = e.getKey();
+                        globalCountries.put(iso, new double[]{lat, lon});
+                        if (v.has("en") && !v.get("en").isJsonNull()) {
+                            countryCodeByName.put(v.get("en").getAsString().toLowerCase(), iso);
+                        }
+                        if (v.has("zh") && !v.get("zh").isJsonNull()) {
+                            String zh = v.get("zh").getAsString();
+                            if (!zh.isEmpty()) {
+                                countryCodeByName.put(zh, iso);
+                            }
+                        }
+                    }
+                    com.google.gson.JsonObject cities = raw.getAsJsonObject("cities");
+                    for (Map.Entry<String, com.google.gson.JsonElement> e : cities.entrySet()) {
+                        com.google.gson.JsonArray a = e.getValue().getAsJsonArray();
+                        globalCities.put(e.getKey(), new double[]{a.get(0).getAsDouble(), a.get(1).getAsDouble()});
+                    }
+                }
+                logger.info("Global geo loaded: " + globalCountries.size() + " countries, "
+                        + globalCities.size() + " cities (offline overseas location).");
+            } else {
+                logger.warning("global_geo.json missing from jar - overseas offline location disabled.");
+            }
+        } catch (Exception e) {
+            logger.warning("Failed to load global_geo.json: " + e.getMessage());
         }
 
         Path db = Path.of(ipDbPath);
@@ -441,23 +484,81 @@ public final class CountdownManager {
                 return new double[]{r.lat, r.lon};
             }
         }
-        if (searcher == null) return null;
+        return offlineIpCoords(ip);
+    }
+
+    /**
+     * 离线 IP → 坐标。兼容 ip2region v2（中国中文）与 v4（海外英文）字段布局：
+     *   v2 中国: "中国|0|贵州省|贵阳市|移动"   → 中文省/市 → cityCoords
+     *   v4 海外: "Japan|Hokkaido|Ishikari|0|JP" → 英文国家/省/市 → GeoNames 全球表
+     * 查询链: 省|市 → 市 → 省 → 国家中心；返回 null 表示未知。
+     */
+    private double[] offlineIpCoords(String ip) {
+        if (searcher == null || ip == null) return null;
         String region = searcher.search(ip);
         if (region == null) return null;
         String[] parts = region.split("\\|");
-        String province = parts.length > 2 ? parts[2] : null;
-        String city = parts.length > 3 ? parts[3] : null;
-        double[] c = null;
-        if (province != null && city != null) {
-            c = cityCoords.get(province + "|" + city);
+        if (parts.length == 0) return null;
+        String countryName = parts[0];
+        String province, city;
+        if (parts.length > 1 && !parts[1].isEmpty() && !parts[1].equals("0")) {
+            // v4 海外风格: 国家|省|市|0|国家码
+            province = parts[1];
+            city = parts.length > 2 && !parts[2].isEmpty() && !parts[2].equals("0") ? parts[2] : null;
+        } else {
+            // v2 中国风格: 国家|0|省|市|ISP
+            province = parts.length > 2 ? parts[2] : null;
+            city = parts.length > 3 ? parts[3] : null;
         }
-        if (c == null && city != null) {
-            c = cityCoords.get(city);
+        String cc = countryCode(countryName);
+        if (cc == null) return null;
+        if (isCnRegion(cc)) {
+            // 中文区: 现有城市坐标表
+            double[] c = null;
+            if (province != null && city != null) {
+                c = cityCoords.get(province + "|" + city);
+            }
+            if (c == null && city != null) {
+                c = cityCoords.get(city);
+            }
+            if (c == null && province != null) {
+                c = cityCoords.get(province);
+            }
+            if (c == null) {
+                c = globalCountries.get(cc); // 港澳台等中文区兜底国家中心
+            }
+            return c;
         }
-        if (c == null && province != null) {
-            c = cityCoords.get(province);
+        // 海外: GeoNames 全球表, 省|市 → 市 → 省 → 国家中心
+        if (!globalCities.isEmpty()) {
+            if (province != null && city != null) {
+                double[] c = globalCities.get(cc + "|" + province + "|" + city);
+                if (c != null) return c;
+            }
+            if (city != null) {
+                double[] c = globalCities.get(cc + "|" + city);
+                if (c != null) return c;
+            }
+            if (province != null) {
+                double[] c = globalCities.get(cc + "|" + province);
+                if (c != null) return c;
+            }
         }
-        return c;
+        return globalCountries.get(cc);
+    }
+
+    /** 国家名（英文小写 / 中文）→ ISO 码；未知返回 null。 */
+    private String countryCode(String name) {
+        if (name == null || name.isEmpty()) return null;
+        String iso = countryCodeByName.get(name);
+        if (iso == null) {
+            iso = countryCodeByName.get(name.toLowerCase());
+        }
+        return iso;
+    }
+
+    private boolean isCnRegion(String cc) {
+        return "CN".equals(cc) || "TW".equals(cc) || "HK".equals(cc) || "MO".equals(cc);
     }
 
     /**
@@ -537,7 +638,7 @@ public final class CountdownManager {
         return fallbackLocation;
     }
 
-    /** 用在线定位缓存 / ip2region 离线表解析一个 IP → 坐标（省市区 → cityCoords）。 */
+    /** 用在线定位缓存 / ip2region 离线表解析一个 IP → 坐标（省市区 → cityCoords / GeoNames）。 */
     private double[] resolveIpCoords(String ip) {
         if (onlineLocation != null) {
             OnlineLocationProvider.Result r = onlineLocation.cached(ip);
@@ -545,26 +646,7 @@ public final class CountdownManager {
                 return new double[]{r.lat, r.lon};
             }
         }
-        if (searcher != null) {
-            String region = searcher.search(ip);
-            if (region != null) {
-                String[] p = region.split("\\|");
-                String province = p.length > 2 ? p[2] : null;
-                String city = p.length > 3 ? p[3] : null;
-                double[] c = null;
-                if (province != null && city != null) {
-                    c = cityCoords.get(province + "|" + city);
-                }
-                if (c == null && city != null) {
-                    c = cityCoords.get(city);
-                }
-                if (c == null && province != null) {
-                    c = cityCoords.get(province);
-                }
-                return c;
-            }
-        }
-        return null;
+        return offlineIpCoords(ip);
     }
 
     private static boolean isIpAddress(String value) {
