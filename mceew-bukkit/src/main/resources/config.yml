@@ -142,5 +142,104 @@ Sound:
     volume: 1000.0
     pitch: 1.0
 
+# ============ 地震预警倒计时（Fork 新增）============
+# 根据玩家 IP 定位（ip2region.xdb + 内置城市坐标表），
+# 计算 S 波到达时间并给玩家显示 BossBar 倒计时。
+# 说明：
+#   - ip2region.xdb 需放到插件目录（默认 plugins/MCEEW/ip2region.xdb）
+#   - 过远 / 震级不足 的预警不会触发倒计时
+#   - 烈度按"玩家位置"用衰减公式估算（不是震中的最大烈度）
+#   - 日本/四川/福建/台湾/中国/重庆 的 EEW 均支持
+Countdown:
+  # 总开关
+  enable: false
+  # 低于该震级不提醒（震级是震源属性，不随距离衰减）
+  min-magnitude: 4.0
+  # 玩家位置预估烈度低于该值不提醒
+  min-intensity: 1.0
+  # 玩家距震中超过该距离(km)不提醒（基础值）
+  max-distance-km: 500
+  # 最大提醒距离随震级自动放宽（取 基础值 与 本表 的较大者）
+  # 例: M7.0 → 1500km，M8.0 → 2500km，M10 → 6000km
+  # 注意: 烈度过滤仍按玩家位置烈度判定，距离放宽不等于烈度不足也提醒
+  max-distance-by-magnitude:
+    - "4.0: 250"
+    - "5.0: 500"
+    - "6.0: 800"
+    - "7.0: 1500"
+    - "8.0: 2500"
+    - "9.0: 4000"
+    - "10.0: 6000"
+  # S 波分段速度模型（km/s），按震源距(km)分段
+  # 默认值依据真实手机预警记录校准（四川→贵阳路径实测等效速度 3.8~4.0 km/s，
+  # 远距离含深部路径取 4.5），全国折中
+  s-wave-speed:
+    - "0-50: 3.6"
+    - "50-100: 3.8"
+    - "100-300: 4.0"
+    - "300-10000: 4.5"
+  # 烈度衰减公式: 预估烈度 I = a + b*M + c*ln(R + d)，R=震源距(km)
+  # 默认系数在《中国西部烈度衰减关系》基础上按真实记录校准（a=3.0 b=1.5），
+  # 覆盖范围比原公式更大，更接近国家预警系统的实际播报烈度
+  intensity-attenuation:
+    enable: true
+    a: 3.0
+    b: 1.5
+    c: -2.058
+    d: 10
+  # ip2region 数据库路径（相对服务器根目录）
+  ip-db-path: "plugins/MCEEW/ip2region.xdb"
+  # 在线 IP 定位增强（可选）: ip2region 离线表只到城市级，开启后玩家加入时
+  # 异步查询腾讯位置服务，可精确到区县并拿到坐标（默认缓存 24 小时，每 IP 一天只查一次）
+  # key/sk 免费申请: https://lbs.qq.com/ → 控制台 → 应用管理 → 创建应用 → 添加 WebServiceAPI
+  # sk 是新版 key 的签名密钥（控制台"密钥管理"可查），带 sk 的请求自动计算 sig 签名；
+  # 个人开发者配额约 1 万次/天，本插件用量为"玩家数/天"，远低于配额；失败自动降级离线
+  online-location:
+    enable: false
+    provider: "tencent"
+    key: ""
+    sk: ""
+    cache-hours: 24
+  # 玩家 IP 定位不到时使用的兜底位置（如局域网/内网玩家）。
+  # 格式: "城市名"（如 成都市）、"纬度,经度"（如 30.67,104.06）
+  #       或 "IP地址"（如 117.189.5.195，按该 IP 的在线定位/离线表结果兜底，
+  #       在线定位启用时会自动预取该 IP 的区县级坐标）。留空 = 不兜底
+  fallback-location: ""
+  # 玩家 IP 定位不到时是否输出日志
+  log-unknown-ip: false
+  # 本地烈度 >= 该阈值时，预警到达瞬间立即发强震 Title（设为 0 = 关闭）
+  strong-title-threshold: 3.0
+  bossbar:
+    # 固定颜色: PINK/BLUE/RED/GREEN/YELLOW/PURPLE/WHITE
+    color: "YELLOW"
+    # 按玩家位置烈度自动变色: >=3 红 / >=1 黄 / 其余绿
+    auto-color-by-intensity: true
+    # 占位符: {region} 震中 {mag} 震级 {depth} 深度km {distance} 距玩家km
+    #         {intensity} 烈度(整数) {intensity_desc} 烈度感受 {seconds} 剩余秒
+    # 每段颜色已区分（&c红 &e黄 &6金 &b青 &a绿 &7灰 &4深红）
+    title: "&c⚠ &e地震预警 &7| &6{region} &bM{mag} &7深&a{depth}km &7| &e距你 &a{distance}km &7| &c烈度 &4{intensity}&7({intensity_desc}) &7| &b{seconds}s &7后到达"
+    # 倒计时归零时是否发送 Title（详细提示）
+    on-arrive-title: true
+    on-arrive-title-text: "&c⚠ &4地震已到达！"
+    on-arrive-subtitle-text: "&6{region} &bM{mag} &7深&a{depth}km &7| &c你处烈度 &4{intensity}&7({intensity_desc}) &7| &e请就近躲避，注意余震"
+    # 到达时额外发送的聊天消息（留空 = 不发送）
+    on-arrive-chat: "&c[地震预警] &f震波已到达！\n&e震中: &f{region} &e| 震级: &fM{mag} &e| 深度: &f{depth}km\n&e距你: &f{distance}km &e| 你处烈度: &f{intensity}({intensity_desc})\n&6请就近躲避：远离窗户、高大家具与悬挂物，蹲下护住头部，注意余震"
+    # 本地烈度 >= 该阈值时，预警到达瞬间立即发 Title（不等倒计时归零）
+    # 按烈度分级措辞（避免"烈度3也叫强震预警"吓人），可分别修改
+    strong-titles:
+      3: "&e有感地震提醒"
+      4: "&6明显有感"
+      5: "&c较强震感"
+      6: "&c⚠ &4强震预警"
+      7: "&4☠ &4毁灭性地震"
+    strong-subtitles:
+      3: "&6{region} &bM{mag} &7| 你处烈度 &4{intensity}&7({intensity_desc}) &7| &b预计 {seconds}s &7后到达，请留意安全"
+      4: "&6{region} &bM{mag} &7| 你处烈度 &4{intensity}&7({intensity_desc}) &7| &b预计 {seconds}s &7后到达，请就近避险"
+      5: "&c{region} &bM{mag} &7| 你处烈度 &4{intensity}&7({intensity_desc}) &7| &b预计 {seconds}s &7后到达，请立即避险"
+      6: "&4{region} &bM{mag} &7| 你处烈度 &4{intensity}&7({intensity_desc}) &7| &b预计 {seconds}s &7后到达，请立即避险，保护头部"
+      7: "&4{region} &bM{mag} &7| 你处烈度 &4{intensity}&7({intensity_desc}) &7| &b预计 {seconds}s &7后到达，请立即逃生，远离一切建筑物"
+    # 强震 Title 重复刷新间隔（秒）：1 = 每秒刷新倒计时，0 = 只发一次
+    strong-repeat-seconds: 1
+
 # Do not change this value
 config-version: 9
