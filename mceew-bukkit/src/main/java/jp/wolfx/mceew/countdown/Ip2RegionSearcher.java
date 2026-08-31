@@ -36,6 +36,14 @@ final class Ip2RegionSearcher {
         }
     }
 
+    /** Loads from an in-memory byte array (e.g. the bundled copy inside the plugin jar). */
+    static Ip2RegionSearcher load(byte[] content) {
+        if (content == null || content.length == 0) {
+            return null;
+        }
+        return new Ip2RegionSearcher(content);
+    }
+
     /** Searches an IPv4 string. Returns null for IPv6 / invalid / not found. Synchronized (not thread-safe internally). */
     synchronized String search(String ipStr) {
         long ip;

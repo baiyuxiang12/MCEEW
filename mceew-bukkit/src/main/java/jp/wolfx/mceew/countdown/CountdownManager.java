@@ -273,8 +273,22 @@ public final class CountdownManager {
         Path db = Path.of(ipDbPath);
         searcher = Ip2RegionSearcher.load(db);
         if (searcher == null) {
-            logger.warning("ip2region.xdb not found at " + db.toAbsolutePath()
-                    + " - IP-based countdown will be disabled. Put ip2region.xdb into the MCEEW plugin folder.");
+            // 外部 xdb 缺失时回退到 jar 内置的全球库（v4, 含 GeoNames 坐标映射配合使用）
+            try (InputStream in = plugin.getResource("ip2region.xdb")) {
+                if (in != null) {
+                    searcher = Ip2RegionSearcher.load(in.readAllBytes());
+                    logger.info("Using built-in ip2region.xdb from plugin jar (external file not found at "
+                            + db.toAbsolutePath() + ").");
+                }
+            } catch (Exception e) {
+                logger.warning("Failed to load bundled ip2region.xdb: " + e.getMessage());
+            }
+            if (searcher == null) {
+                logger.warning("ip2region.xdb not found - IP-based countdown will be disabled. "
+                        + "Put ip2region.xdb into the MCEEW plugin folder or use the bundled copy.");
+            } else {
+                logger.info("ip2region.xdb loaded (" + cityCoords.size() + " city entries).");
+            }
         } else {
             logger.info("ip2region.xdb loaded (" + cityCoords.size() + " city entries).");
         }
