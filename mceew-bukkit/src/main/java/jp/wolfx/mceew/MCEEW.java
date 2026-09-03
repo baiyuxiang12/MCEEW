@@ -814,6 +814,53 @@ public final class MCEEW extends JavaPlugin implements Listener {
         return false;
     }
 
+    @Override
+    public java.util.List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        if (args.length == 1) {
+            return filterTab("test", args[0]);
+        }
+        if (args.length == 2 && "test".equalsIgnoreCase(args[0])) {
+            return filterTab(java.util.Arrays.asList("forecast", "alert", "sc", "fj", "cwa", "cenc", "cq", "yibin77", "region", "ip"),
+                    args[1]);
+        }
+        // /eew test region <省> [市] [区] <震级> [玩家名]
+        if (args.length >= 3 && "test".equalsIgnoreCase(args[0]) && "region".equalsIgnoreCase(args[1])) {
+            if (countdownManager == null) {
+                return null;
+            }
+            String last = args[args.length - 1];
+            if (args.length == 3) {
+                return countdownManager.tabProvinces(last);
+            }
+            if (args.length == 4) {
+                return countdownManager.tabCities(args[2], last);
+            }
+            if (args.length == 5) {
+                return countdownManager.tabDistricts(args[3], last);
+            }
+            // args.length == 6: 震级位
+            return java.util.Collections.emptyList();
+        }
+        if (args.length >= 3 && "test".equalsIgnoreCase(args[0]) && "ip".equalsIgnoreCase(args[1])) {
+            return java.util.Collections.emptyList();
+        }
+        return null; // 其余交给默认(玩家名补全)
+    }
+
+    private static java.util.List<String> filterTab(String one, String prefix) {
+        return filterTab(java.util.Collections.singletonList(one), prefix);
+    }
+
+    private static java.util.List<String> filterTab(java.util.List<String> candidates, String prefix) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (String c : candidates) {
+            if (prefix == null || prefix.isEmpty() || c.toLowerCase().startsWith(prefix.toLowerCase())) {
+                out.add(c);
+            }
+        }
+        return out;
+    }
+
     private void sendEewTestHelp(CommandSender sender) {
         sender.sendMessage("§a[MCEEW] §3/eew test forecast§a - Send JMA forecast EEW test.");
         sender.sendMessage("§a[MCEEW] §3/eew test alert§a - Send JMA alert EEW test.");
@@ -827,8 +874,7 @@ public final class MCEEW extends JavaPlugin implements Listener {
         sender.sendMessage("§a[MCEEW] §3/eew test region <省> [市] [区] <震级> [玩家名]§a - Simulate quake at a region (e.g. /eew test region 四川省 成都市 武侯区 7.0 ; 末尾加玩家名只发给他: /eew test region 贵州省 贵阳市 开阳县 8.0 baiyuxiang12).");
     }
 
-    private synchronized boolean prepareAndLoadConfiguration() {
-        try {
+    private synchronized boolean prepareAndLoadConfiguration() {        try {
             configManager.prepareConfig();
         } catch (ConfigManager.ConfigPreparationException error) {
             return false;

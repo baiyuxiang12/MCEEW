@@ -19,10 +19,13 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
@@ -107,6 +110,9 @@ public final class CountdownManager {
     private Ip2RegionSearcher searcher;
     private OnlineLocationProvider onlineLocation;
     private final Map<String, double[]> cityCoords = new HashMap<>();
+    // 地区层级树(用于 /eew test region Tab 补全)
+    private final Map<String, Set<String>> provinceCities = new HashMap<>();
+    private final Map<String, Set<String>> cityDistricts = new HashMap<>();
     private final Map<String, double[]> globalCities = new HashMap<>();   // "CC|省|市" / "CC|市" / "CC|省" -> 坐标（GeoNames）
     private final Map<String, double[]> globalCountries = new HashMap<>(); // "CC" -> 国家中心坐标
     private final Map<String, String> countryCodeByName = new HashMap<>(); // 国家名（英文小写/中文）-> ISO 码
@@ -265,6 +271,7 @@ public final class CountdownManager {
         } catch (Exception e) {
             logger.warning("Failed to load city_coords.json: " + e.getMessage());
         }
+        buildRegionTree();
 
         // 全球坐标表（GeoNames）：海外 IP（英文 国家|省|市）离线定位用，国家中心兜底
         globalCities.clear();
@@ -618,6 +625,17 @@ public final class CountdownManager {
         }
     }
 
+    /** >99 秒时只播一个间隔音(滴滴), 不报数字。 */
+    private void playGapOnly(Player player, double felt) {
+        try {
+            String ns = soundNamespace == null || soundNamespace.isBlank() ? "yujing:" : soundNamespace.trim() + ":";
+            String gap = felt > 5.0 ? "didi" : (felt > 3.0 ? "di" : "non");
+            playVoice(player, ns + gap);
+        } catch (Exception e) {
+            logger.warning("Countdown gap error: " + e.getMessage());
+        }
+    }
+
     /** 序列声音依次播放, 每声间隔 300ms(紧凑, 近似小米节奏)。 */
     private void playVoiceSeq(final Player player, java.util.List<String> keys) {
         long delayMs = 0;
@@ -650,6 +668,57 @@ public final class CountdownManager {
             case 9: return "nine";
             default: return "ten";
         }
+    }
+
+    /** 从 city_coords 键构建 省→市→区 层级树(供 Tab 补全)。 */
+    private void buildRegionTree() {
+        provinceCities.clear();
+        cityDistricts.clear();
+        for (String key : cityCoords.keySet()) {
+            String[] p = key.split("\\|");
+            if (p.length >= 2) {
+                provinceCities.computeIfAbsent(p[0], k -> new TreeSet<>()).add(p[1]);
+            }
+            if (p.length >= 3) {
+                cityDistricts.computeIfAbsent(p[1], k -> new TreeSet<>()).add(p[2]);
+            }
+        }
+    }
+
+    /** 省级候选(含直辖市等), prefix 过滤。 */
+    public java.util.List<String> tabProvinces(String prefix) {
+        java.util.List<String> out = new ArrayList<>();
+        for (String p : provinceCities.keySet()) {
+            if (prefix == null || prefix.isEmpty() || p.startsWith(prefix)) {
+                out.add(p);
+            }
+        }
+        return out;
+    }
+
+    /** 某省下的市级候选。 */
+    public java.util.List<String> tabCities(String province, String prefix) {
+        Set<String> cs = provinceCities.get(province);
+        return filterNames(cs, prefix);
+    }
+
+    /** 某市下的区县候选(可带省参数以便兼容仅有区键的情况)。 */
+    public java.util.List<String> tabDistricts(String city, String prefix) {
+        Set<String> ds = cityDistricts.get(city);
+        return filterNames(ds, prefix);
+    }
+
+    private static java.util.List<String> filterNames(Set<String> names, String prefix) {
+        java.util.List<String> out = new ArrayList<>();
+        if (names == null) {
+            return out;
+        }
+        for (String n : names) {
+            if (prefix == null || prefix.isEmpty() || n.startsWith(prefix)) {
+                out.add(n);
+            }
+        }
+        return out;
     }
 
     /** 解析 "省|市|区" 名称 → 坐标（逐级降级匹配）。返回 {lat, lon} 或 null。 */
@@ -866,13 +935,8 @@ public final class CountdownManager {
         scheduler.runGlobal(this::updateBossBars);
         tickerHandle = null;
         if (!active.isEmpty()) {
-            // 对齐到下一个秒边界触发, 使 Title/BossBar 每秒固定节奏刷新(不漂移)
-            long now = System.currentTimeMillis();
-            long delayMs = 1000 - (now % 1000);
-            if (delayMs < 100) {
-                delayMs += 1000;
-            }
-            tickerHandle = scheduler.runAsyncDelayed(this::tick, delayMs, TimeUnit.MILLISECONDS);
+            // 250ms 轮询: 主线程小延迟也不易吞秒(秒变化即发, 不受每秒节流限制)
+            tickerHandle = scheduler.runAsyncDelayed(this::tick, 250, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -907,25 +971,27 @@ public final class CountdownManager {
                 }
                 continue;
             }
-            // 每秒报数: 预警音后(tickDelayMs)开始, 每秒播剩余秒数的中文数字(300ms 间隔序列)
+            // 每秒报数: 预警音后(tickDelayMs)开始, 每秒播剩余秒数的中文数字(300ms 间隔序列);
+            // 剩余 >99 秒时不逐秒报数字, 只播间隔音(滴滴, 小米 >99 秒播提示音)
             if (soundEnable && now - cd.startEpochMs >= tickDelayMs && tickSound != null && !tickSound.isBlank()) {
                 long remainSecs = (cd.endEpochMs - now) / 1000;
                 if (remainSecs > 0 && remainSecs != cd.lastVoiceSec) {
                     cd.lastVoiceSec = remainSecs;
-                    playCountdownVoice(player, remainSecs, cd.feltIntensity);
+                    if (remainSecs <= 99) {
+                        playCountdownVoice(player, remainSecs, cd.feltIntensity);
+                    } else {
+                        playGapOnly(player, cd.feltIntensity);
+                    }
                 }
             }
             // titleOnly 模式：只保留到达提示，不创建/更新 BossBar；
-            // 强震 Title 按 strongRepeatMs 间隔重复刷新（带最新剩余秒数）
+            // 强震 Title 秒数变化即刷新(250ms 轮询足够及时, 不去重节流避免吞秒)
             if (cd.titleOnly) {
-                if (strongRepeatMs > 0 && now - cd.lastStrongSentMs >= strongRepeatMs) {
-                    long secs = Math.max(0, (cd.endEpochMs - now) / 1000);
-                    // 只在秒数变化时重发, 停留 2.25s 覆盖每秒刷新间隔, Title 不消失不闪
-                    if (secs != cd.lastTitleSec) {
-                        cd.lastTitleSec = secs;
-                        cd.lastStrongSentMs = now;
-                        player.sendTitle(titleFor(cd.feltIntensity), renderTemplate(subtitleFor(cd.feltIntensity), cd, secs), 0, 45, 0);
-                    }
+                long secs = Math.max(0, (cd.endEpochMs - now) / 1000);
+                if (secs != cd.lastTitleSec) {
+                    cd.lastTitleSec = secs;
+                    cd.lastStrongSentMs = now;
+                    player.sendTitle(titleFor(cd.feltIntensity), renderTemplate(subtitleFor(cd.feltIntensity), cd, secs), 0, 45, 0);
                 }
                 continue;
             }
