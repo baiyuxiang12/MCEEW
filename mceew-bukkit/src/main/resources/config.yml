@@ -1,5 +1,5 @@
 #
-#  MCEEW configuration
+#  MCEEW 配置文件
 #
 #  API Source: https://api.wolfx.jp
 #  GitHub: https://github.com/TenkyuChimata/MCEEW
@@ -8,135 +8,135 @@
 # ####
 
 ########################
-# %flag% 予報 or 警報 | 正式测定 or 自动测定
-# %report_time% EEW report time
-# %origin_time% Earthquake occurrence time
-# %num% Report number
-# %lat% Epicenter latitude
-# %lon% Epicenter longitude
-# %region% Epicenter location name
-# %mag% Earthquake magnitude
-# %depth% Earthquake depth
-# %shindo% Earthquake intensity
-# %type% 仮定震源 or 最終報 or 訓練 or 仮定震源 (最終報) or 訓練 (最終報) or 取消
-# %info% Tsunami information
-# \n New line
+# %flag% 予報 或 警報 | 正式测定 或 自动测定 | 取消 等
+# %report_time% 预警发布时间
+# %origin_time% 发震时间
+# %num% 报号
+# %lat% 震中纬度
+# %lon% 震中经度
+# %region% 震中地名
+# %mag% 震级
+# %depth% 震源深度
+# %shindo% 地震烈度/震度
+# %type% 仮定震源 或 最終報 或 訓練 或 取消
+# %info% 海啸信息
+# \n 换行
 ########################
 
-# Enable Japan JMA EEW broadcast
+# 启用日本 JMA 紧急地震速报广播
 enable_jp: true
 
-# Enable Sichuan EEW broadcast
+# 启用四川地震预警广播
 enable_sc: true
 
-# Enable Fujian/Taiwan EEW broadcast
+# 启用福建/台湾地震预警广播
 enable_fj: true
 
-# Enable Taiwan CWA EEW broadcast
+# 启用台湾 CWA 地震预警广播
 enable_cwa: true
 
-# Enable CENC EEW broadcast
+# 启用中国 CENC 地震预警广播
 enable_cenceew: true
 
-# Enable Chongqing EEW broadcast
+# 启用重庆地震预警广播
 enable_cq: true
 
-# Date-time format
+# 时间格式
 time_format: "yyyy年MM月dd日 HH時mm分ss秒"
 
 Action:
-  # Broadcast messages to chat
+  # 广播到聊天栏
   broadcast: true
-  # Broadcast messages to title
+  # 广播到标题(Title)
   title: true
-  # Play alert sound
+  # 播放警报音
   alert: true
-  # Enable Japan JMA report broadcast
+  # 启用日本 JMA 地震信息广播
   jma: true
-  # Enable China CENC report broadcast
+  # 启用中国 CENC 地震信息广播
   cenc: true
 
 Message:
-  # Japan JMA EEW alert report
+  # 日本 JMA 紧急地震速报 - 警报
   Alert:
-    # Set the chat message format
+    # 设置聊天消息格式
     broadcast: "&c緊急地震速報 (%flag%) | 第%num%報 %type%\n &e%origin_time% &f発生\n &f震央: &e%region% (北緯: &e%lat%度 東経: &e%lon%度)\n &fマグニチュード: &e%mag%\n &f深さ: &e%depth%\n &f最大震度: &r%shindo%\n &f更新時間: &e%report_time%"
-    # Set the title message format
+    # 设置标题(Title)格式
     title: "&c緊急地震速報 (%flag%)"
-    # Set the subtitle message format
+    # 设置副标题(Subtitle)格式
     subtitle: "&e%region%で震度%shindo%&eの地震"
-  # Japan JMA EEW forecast report
+  # 日本 JMA 紧急地震速报 - 予报
   Forecast:
     broadcast: "&e緊急地震速報 (%flag%) | 第%num%報 %type%\n &e%origin_time% &f発生\n &f震央: &e%region% (北緯: &e%lat%度 東経: &e%lon%度)\n &fマグニチュード: &e%mag%\n &f深さ: &e%depth%\n &f最大震度: &r%shindo%\n &f更新時間: &e%report_time%"
     title: "&e緊急地震速報 (%flag%)"
     subtitle: "&e%region%で震度%shindo%&eの地震"
-  # Japan JMA earthquake report
+  # 日本 JMA 地震信息报告
   Jma:
     broadcast: "&e地震情報\n &e%origin_time% &f発生\n &f震央: &e%region% (北緯: &e%lat%度 東経: &e%lon%度)\n &fマグニチュード: &e%mag%\n &f深さ: &e%depth%\n &f最大震度: &r%shindo%\n &f津波情報: &e%info%"
-  # China CENC report
+  # 中国 CENC 地震信息报告
   Cenc:
     broadcast: "&e中国地震台网 (%flag%)\n &e%origin_time% &f发生\n &f震中: &e%region% (北纬: &e%lat%度 东经: &e%lon%度)\n &f震级: &e%mag%\n &f深度: &e%depth%\n &f最大烈度: &r%shindo%"
-  # Sichuan EEW message
+  # 四川地震预警消息
   Sichuan:
     broadcast: "&c四川地震预警 | 第%num%报\n &e%origin_time% &f发生\n &f震中: &e%region% (北纬: &e%lat%度 东经: &e%lon%度)\n &f震级: &e%mag%\n &f深度: &e%depth%\n &f最大烈度: &r%shindo%\n &f更新时间: &e%report_time%"
     title: "&c四川地震预警"
     subtitle: "&e%region%发生烈度%shindo%&e的地震"
-  # Fujian/Taiwan EEW message
+  # 福建/台湾地震预警消息
   Fjea:
     broadcast: "&c福建地震預警 | 第%num%報 %type%\n &e%origin_time% &f發生\n &f震央: &e%region% (北緯: &e%lat%度 東經: &e%lon%度)\n &f規模: &e%mag%\n &f更新時間: &e%report_time%"
     title: "&c福建地震預警"
     subtitle: "&e%region%发生震级%mag%地震"
-  # Taiwan CWA EEW message
+  # 台湾 CWA 地震预警消息
   Cwa:
     broadcast: "&c台灣地震預警 | 第%num%報\n &e%origin_time% &f發生\n &f震央: &e%region% (北緯: &e%lat%度 東經: &e%lon%度)\n &f規模: &e%mag%\n &f深度: &e%depth%\n &f最大震度: &r%shindo%\n &f更新時間: &e%report_time%"
     title: "&c台灣地震預警"
     subtitle: "&e%region%发生芮氏規模%mag%地震"
-  # China CENC EEW message
+  # 中国 CENC 地震预警消息
   CencEEW:
     broadcast: "&c中国地震台网地震预警 | 第%num%报\n &e%origin_time% &f发生\n &f震中: &e%region% (北纬: &e%lat%度 东经: &e%lon%度)\n &f震级: &e%mag%\n &f深度: &e%depth%\n &f最大烈度: &r%shindo%\n &f更新时间: &e%report_time%"
     title: "&c中国地震台网地震预警"
     subtitle: "&e%region%发生震级%mag%地震"
-  # Chongqing EEW message
+  # 重庆地震预警消息
   Chongqing:
     broadcast: "&c重庆地震预警 | 第%num%报\n &e%origin_time% &f发生\n &f震中: &e%region% (北纬: &e%lat%度 东经: &e%lon%度)\n &f震级: &e%mag%\n &f深度: &e%depth%\n &f最大烈度: &r%shindo%\n &f更新时间: &e%report_time%"
     title: "&c重庆地震预警"
     subtitle: "&e%region%发生震级%mag%地震"
 
 Sound:
-  # Japan JMA EEW alert sound
+  # 日本 JMA 紧急地震速报 - 警报音
   Alert:
-    # Set the alert sound type
+    # 设置警报音类型
     type: "block.note_block.pling"
-    # Set the alert sound volume
+    # 设置警报音量
     volume: 1000.0
-    # Set the alert sound pitch
+    # 设置警报音高
     pitch: 1.0
-  # Japan JMA EEW forecast sound
+  # 日本 JMA 紧急地震速报 - 予报音
   Forecast:
     type: "block.note_block.pling"
     volume: 1000.0
     pitch: 1.0
-  # Sichuan EEW sound
+  # 四川地震预警音
   Sichuan:
     type: "block.note_block.pling"
     volume: 1000.0
     pitch: 1.0
-  # Fujian/Taiwan EEW sound
+  # 福建/台湾地震预警音
   Fjea:
     type: "block.note_block.pling"
     volume: 1000.0
     pitch: 1.0
-  # Taiwan CWA EEW sound
+  # 台湾 CWA 地震预警音
   Cwa:
     type: "block.note_block.pling"
     volume: 1000.0
     pitch: 1.0
-  # China CENC EEW sound
+  # 中国 CENC 地震预警音
   CencEEW:
     type: "block.note_block.pling"
     volume: 1000.0
     pitch: 1.0
-  # Chongqing EEW sound
+  # 重庆地震预警音
   Chongqing:
     type: "block.note_block.pling"
     volume: 1000.0
@@ -240,15 +240,18 @@ Countdown:
       7: "&4{region} &bM{mag} &7| 你处烈度 &4{intensity}&7({intensity_desc}) &7| &b预计 {seconds}s &7后到达，请立即逃生，远离一切建筑物"
     # 强震 Title 重复刷新间隔（秒）：1 = 每秒刷新倒计时，0 = 只发一次
     strong-repeat-seconds: 1
-  # 倒计时声音（配合资源包自定义音效，如 CraftEngine 资源包的 yujing:tick / yujing:red）
-  # 音频文件由资源包提供（.ogg, 放 assets/<命名空间>/sounds/），key 格式: <命名空间>:<事件名>
+  # 倒计时声音（可选资源包功能）: 关闭时完全无声, 不影响倒计时。
+  # 需要自定义声音资源包提供音效事件(如 CraftEngine 资源包: 数字 one~ten + di/didi/non +
+  # 预警音 tag0~tag4), 事件 key 格式: <命名空间>:<事件名>
   sound:
     enable: false
-    # 每秒滴答声（0.5s 左右的短"滴"声, 语音播完后才开播）
+    # 数字/间隔音事件的命名空间(对应资源包的命名空间), 不装资源包就保持 enable: false
+    namespace: "yujing"
+    # 逐秒中文报数开关: 非空启用(资源包需含 one~ten/di/didi/non), 留空 = 只播 announce 不报数
     tick: "yujing:tick"
-    # 滴答延迟: 等预警语音播完再开始滴（秒）。0 = 触发即滴
+    # 报数延迟: 等预警音播完再开始（秒）。0 = 触发即报
     tick-delay-seconds: 6.5
-    # 触发时按玩家位置烈度播放的预警播报（语音），档位向下取整匹配
+    # 触发时按玩家位置烈度播放的预警播报音（资源包需含 tag0~tag4）
     announce:
       enable: false
       # 预警音素材按小米 getAlertRaw: 烈度1→tag0, 2→tag1, 3-4→tag2, 5-6→tag3, 7+→tag4

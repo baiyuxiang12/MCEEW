@@ -90,10 +90,11 @@ public final class CountdownManager {
     private final java.util.TreeMap<Integer, String> strongTitles = new java.util.TreeMap<>();
     private final java.util.TreeMap<Integer, String> strongSubtitles = new java.util.TreeMap<>();
     private long strongRepeatMs;
-    // 倒计时声音: 每秒滴答 + 触发时按烈度播报 (资源包自定义音效)
+    // 倒计时声音: 每秒滴答 + 触发时按烈度播报 (资源包自定义音效, 可选)
     private boolean soundEnable;
-    private String tickSound; // 每秒滴答音效 key, 空 = 不播
-    private long tickDelayMs; // 滴答延迟(等语音播完再开始), ms
+    private String soundNamespace; // 数字/间隔音事件命名空间 (如 yujing), 资源包可选
+    private String tickSound; // 每秒报数开关: 非空才启用逐秒中文报数
+    private long tickDelayMs; // 报数延迟(等预警音播完再开始), ms
     private boolean announceEnable;
     private final java.util.TreeMap<Integer, String> announceSounds = new java.util.TreeMap<>(); // 烈度档 → 播报音效 key
     private float soundVolume;
@@ -226,6 +227,7 @@ public final class CountdownManager {
 
         // 倒计时声音（配合资源包自定义音效，如 CE 资源包 yujing:tick / yujing:red ...）
         soundEnable = plugin.getConfig().getBoolean("Countdown.sound.enable", false);
+        soundNamespace = plugin.getConfig().getString("Countdown.sound.namespace", "yujing");
         tickSound = plugin.getConfig().getString("Countdown.sound.tick", "");
         tickDelayMs = (long) (plugin.getConfig().getDouble("Countdown.sound.tick-delay-seconds", 6.5) * 1000);
         announceEnable = plugin.getConfig().getBoolean("Countdown.sound.announce.enable", false);
@@ -534,7 +536,7 @@ public final class CountdownManager {
         try {
             int s = (int) Math.min(remainSecs, 99);
             if (s <= 0) return;
-            String ns = "yujing:";
+            String ns = soundNamespace == null || soundNamespace.isBlank() ? "yujing:" : soundNamespace.trim() + ":";
             java.util.List<String> keys = new java.util.ArrayList<>();
             if (s <= 10) {
                 keys.add(ns + digitKey(s));
