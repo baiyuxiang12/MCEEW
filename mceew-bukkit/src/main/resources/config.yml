@@ -178,15 +178,15 @@ Countdown:
     - "50-100: 3.8"
     - "100-300: 4.0"
     - "300-10000: 4.5"
-  # 烈度衰减公式: 预估烈度 I = a + b*M + c*ln(R + d)，R=震源距(km)
-  # 默认系数在《中国西部烈度衰减关系》基础上按真实记录校准（a=3.0 b=1.5），
-  # 覆盖范围比原公式更大，更接近国家预警系统的实际播报烈度
+  # 烈度衰减公式: 预估烈度 I = a + b*M + c*ln(水平距离 + d)
+  # 默认值 = 小米手机地震预警同口径 (CalcCountdown: a=2.941 b=1.363 c=-1.494 d=7),
+  # 距离用"水平距离"不用震源距; 与国标分级一致: <3蓝 / 3-4黄 / 5-6橙 / 7+红
   intensity-attenuation:
     enable: true
-    a: 3.0
-    b: 1.5
-    c: -2.058
-    d: 10
+    a: 2.941
+    b: 1.363
+    c: -1.494
+    d: 7
   # ip2region 数据库路径（相对服务器根目录）
   ip-db-path: "plugins/MCEEW/ip2region.xdb"
   # 在线 IP 定位增强（可选）: ip2region 离线表只到城市级，开启后玩家加入时
@@ -244,16 +244,21 @@ Countdown:
   # 音频文件由资源包提供（.ogg, 放 assets/<命名空间>/sounds/），key 格式: <命名空间>:<事件名>
   sound:
     enable: false
-    # 每秒滴答声（倒计时刷新时播一次，0.5s 左右的短"滴"声）
+    # 每秒滴答声（0.5s 左右的短"滴"声, 语音播完后才开播）
     tick: "yujing:tick"
+    # 滴答延迟: 等预警语音播完再开始滴（秒）。0 = 触发即滴
+    tick-delay-seconds: 6.5
     # 触发时按玩家位置烈度播放的预警播报（语音），档位向下取整匹配
     announce:
       enable: false
-      "3": "yujing:blue"
-      "4": "yujing:blue"
-      "5": "yujing:yellow"
-      "6": "yujing:orange"
-      "7": "yujing:red"
+      # 预警音素材按小米 getAlertRaw: 烈度1→tag0, 2→tag1, 3-4→tag2, 5-6→tag3, 7+→tag4
+      "1": "yujing:tag0"
+      "2": "yujing:tag1"
+      "3": "yujing:tag2"
+      "4": "yujing:tag2"
+      "5": "yujing:tag3"
+      "6": "yujing:tag3"
+      "7": "yujing:tag4"
     volume: 1.0
     pitch: 1.0
 

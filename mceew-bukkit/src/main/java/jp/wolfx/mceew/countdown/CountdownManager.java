@@ -35,6 +35,7 @@ public final class CountdownManager {
 
     private static final class ActiveCountdown {
         final long endEpochMs;
+        final long startEpochMs; // 触发时间, 用于延迟滴答
         final double totalSeconds;
         final double distanceKm;
         final double depthKm;
@@ -43,10 +44,12 @@ public final class CountdownManager {
         final double feltIntensity;
         final boolean titleOnly;
         long lastStrongSentMs;
+        long lastVoiceSec = -1; // 已报数的秒数(小米式逐秒报数去重)
 
-        ActiveCountdown(long endEpochMs, double totalSeconds, double distanceKm, double depthKm,
+        ActiveCountdown(long endEpochMs, long startEpochMs, double totalSeconds, double distanceKm, double depthKm,
                         String region, double magnitude, double feltIntensity, boolean titleOnly) {
             this.endEpochMs = endEpochMs;
+            this.startEpochMs = startEpochMs;
             this.totalSeconds = totalSeconds;
             this.distanceKm = distanceKm;
             this.depthKm = depthKm;
@@ -90,6 +93,7 @@ public final class CountdownManager {
     // 倒计时声音: 每秒滴答 + 触发时按烈度播报 (资源包自定义音效)
     private boolean soundEnable;
     private String tickSound; // 每秒滴答音效 key, 空 = 不播
+    private long tickDelayMs; // 滴答延迟(等语音播完再开始), ms
     private boolean announceEnable;
     private final java.util.TreeMap<Integer, String> announceSounds = new java.util.TreeMap<>(); // 烈度档 → 播报音效 key
     private float soundVolume;
@@ -223,6 +227,7 @@ public final class CountdownManager {
         // 倒计时声音（配合资源包自定义音效，如 CE 资源包 yujing:tick / yujing:red ...）
         soundEnable = plugin.getConfig().getBoolean("Countdown.sound.enable", false);
         tickSound = plugin.getConfig().getString("Countdown.sound.tick", "");
+        tickDelayMs = (long) (plugin.getConfig().getDouble("Countdown.sound.tick-delay-seconds", 6.5) * 1000);
         announceEnable = plugin.getConfig().getBoolean("Countdown.sound.announce.enable", false);
         soundVolume = (float) plugin.getConfig().getDouble("Countdown.sound.volume", 1.0);
         soundPitch = (float) plugin.getConfig().getDouble("Countdown.sound.pitch", 1.0);
@@ -440,7 +445,9 @@ public final class CountdownManager {
         double focalKm = Math.sqrt(distanceKm * distanceKm + depthKm * depthKm);
         double feltIntensity;
         if (attenuationEnabled) {
-            feltIntensity = attA + attB * magnitude + attC * Math.log(focalKm + attD);
+            // 小米手机预警口径: I = a + b*M + c*ln(水平距离 + d)
+            // (小米 CalcCountdown: a=2.941 b=1.363 c=-1.494 d=7, 距离用水平距离不用震源距)
+            feltIntensity = attA + attB * magnitude + attC * Math.log(distanceKm + attD);
             if (feltIntensity < 0) feltIntensity = 0;
             if (feltIntensity > 12) feltIntensity = 12;
         } else {
@@ -457,7 +464,7 @@ public final class CountdownManager {
             // 预警盲区：近震中玩家倒计时已为负，不发倒计时，但立即提示"已到达"
             logger.info("Countdown: " + player.getName() + " blind zone (ETA " + (etaMs / 1000.0)
                     + "s <= 0, " + (int) Math.round(distanceKm) + "km)");
-            ActiveCountdown cd0 = new ActiveCountdown(System.currentTimeMillis(), travelSeconds,
+            ActiveCountdown cd0 = new ActiveCountdown(System.currentTimeMillis(), System.currentTimeMillis(), travelSeconds,
                     distanceKm, depthKm, regionName, magnitude, feltIntensity, false);
             scheduler.runGlobal(() -> {
                 if (onArriveTitle) {
@@ -473,7 +480,7 @@ public final class CountdownManager {
         long endEpochMs = System.currentTimeMillis() + etaMs;
         // 本地烈度 >= 阈值 → 只发强震 Title，不再显示 BossBar
         final boolean titleOnly = feltIntensity >= strongThreshold;
-        ActiveCountdown cd = new ActiveCountdown(endEpochMs, travelSeconds, distanceKm, depthKm,
+        ActiveCountdown cd = new ActiveCountdown(endEpochMs, System.currentTimeMillis(), travelSeconds, distanceKm, depthKm,
                 regionName, magnitude, feltIntensity, titleOnly);
         logger.info("Countdown -> " + player.getName() + ": " + (int) Math.round(distanceKm)
                 + "km, felt " + String.format("%.1f", feltIntensity)
@@ -492,14 +499,17 @@ public final class CountdownManager {
         });
     }
 
-    /** 触发时按玩家位置烈度播对应档位的预警播报音一次。 */
+    /** 触发时按玩家位置烈度播对应档位的预警播报音一次。档位取整与 Title 显示一致（向下取整）。 */
+
+    /** 触发时按玩家位置烈度播对应档位的预警播报音一次。档位取整与 Title 显示一致（向下取整）。 */
     private void playAnnounce(Player player, double feltIntensity) {
         if (!soundEnable || !announceEnable || announceSounds.isEmpty()) {
             return;
         }
-        Integer tier = announceSounds.floorKey((int) Math.floor(feltIntensity));
+        int rounded = (int) Math.floor(feltIntensity);
+        Integer tier = announceSounds.floorKey(rounded);
         if (tier == null) {
-            tier = announceSounds.lastKey();
+            tier = announceSounds.firstKey(); // 烈度低于最低档 → 播最低档（蓝）, 不误报最高档
         }
         String key = announceSounds.get(tier);
         if (key == null || key.isBlank()) {
@@ -508,8 +518,79 @@ public final class CountdownManager {
         try {
             player.playSound(player.getLocation(), key.trim(),
                     org.bukkit.SoundCategory.PLAYERS, soundVolume, soundPitch);
+            logger.info("Announce sound: felt " + String.format("%.1f", feltIntensity)
+                    + " -> tier " + tier + " (" + key.trim() + ")");
         } catch (Exception e) {
             logger.warning("Failed to play announce sound " + key + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * 小米式逐秒报数: 播放剩余秒数的中文数字语音(yujing:one~ten 拼接),
+     * 数字后按烈度强度组跟间隔音 (烈度>5:didi, 3-5:di, <=3:non)。
+     * 序列内每声间隔 500ms(小米 mInterval), 依次播放避免重叠。
+     */
+    private void playCountdownVoice(Player player, long remainSecs, double felt) {
+        try {
+            int s = (int) Math.min(remainSecs, 99);
+            if (s <= 0) return;
+            String ns = "yujing:";
+            java.util.List<String> keys = new java.util.ArrayList<>();
+            if (s <= 10) {
+                keys.add(ns + digitKey(s));
+            } else {
+                int tens = s / 10;
+                int ones = s % 10;
+                if (tens == 1) {
+                    keys.add(ns + "ten");          // 十一 ~ 十九: 先"十"
+                } else {
+                    keys.add(ns + digitKey(tens)); // 二十一+: 先"二"
+                    keys.add(ns + "ten");          // 再"十"
+                }
+                if (ones > 0) {
+                    keys.add(ns + digitKey(ones));
+                }
+            }
+            // 间隔音: 强度组 >5 didi / 3-5 di / <=3 non
+            String gap = felt > 5.0 ? "didi" : (felt > 3.0 ? "di" : "non");
+            keys.add(ns + gap);
+            playVoiceSeq(player, keys);
+        } catch (Exception e) {
+            logger.warning("Countdown voice error: " + e.getMessage());
+        }
+    }
+
+    /** 序列声音依次播放, 每声间隔 300ms(紧凑, 近似小米节奏)。 */
+    private void playVoiceSeq(final Player player, java.util.List<String> keys) {
+        long delayMs = 0;
+        for (final String key : keys) {
+            final long d = delayMs;
+            final Player target = player;
+            scheduler.runAsyncDelayed(() -> scheduler.runGlobal(() -> {
+                if (target.isOnline()) {
+                    playVoice(target, key);
+                }
+            }), d, TimeUnit.MILLISECONDS);
+            delayMs += 300;
+        }
+    }
+
+    private void playVoice(Player player, String key) {
+        player.playSound(player.getLocation(), key, org.bukkit.SoundCategory.PLAYERS, soundVolume, soundPitch);
+    }
+
+    private static String digitKey(int n) {
+        switch (n) {
+            case 1: return "one";
+            case 2: return "two";
+            case 3: return "three";
+            case 4: return "four";
+            case 5: return "five";
+            case 6: return "six";
+            case 7: return "seven";
+            case 8: return "eight";
+            case 9: return "nine";
+            default: return "ten";
         }
     }
 
@@ -755,13 +836,12 @@ public final class CountdownManager {
                 }
                 continue;
             }
-            // 每秒滴答声: 倒计时刷新时播放（每秒一次，配合 ticker 频率）
-            if (soundEnable && tickSound != null && !tickSound.isBlank()) {
-                try {
-                    player.playSound(player.getLocation(), tickSound.trim(),
-                            org.bukkit.SoundCategory.PLAYERS, soundVolume, soundPitch);
-                } catch (Exception e) {
-                    logger.warning("Failed to play tick sound " + tickSound + ": " + e.getMessage());
+            // 每秒报数: 预警音后(tickDelayMs)开始, 每秒播剩余秒数的中文数字(300ms 间隔序列)
+            if (soundEnable && now - cd.startEpochMs >= tickDelayMs && tickSound != null && !tickSound.isBlank()) {
+                long remainSecs = (cd.endEpochMs - now) / 1000;
+                if (remainSecs > 0 && remainSecs != cd.lastVoiceSec) {
+                    cd.lastVoiceSec = remainSecs;
+                    playCountdownVoice(player, remainSecs, cd.feltIntensity);
                 }
             }
             // titleOnly 模式：只保留到达提示，不创建/更新 BossBar；
@@ -835,10 +915,19 @@ public final class CountdownManager {
         title = title.replace("{mag}", String.valueOf(cd.magnitude));
         title = title.replace("{depth}", String.valueOf((int) Math.round(cd.depthKm)));
         title = title.replace("{distance}", String.valueOf((int) Math.round(cd.distanceKm)));
-        title = title.replace("{intensity}", String.valueOf((int) Math.round(cd.feltIntensity)));
+        title = title.replace("{intensity}", formatIntensity(cd.feltIntensity));
         title = title.replace("{intensity_desc}", intensityDesc(cd.feltIntensity));
         title = title.replace("{seconds}", String.valueOf(seconds));
         return title;
+    }
+
+    /** 烈度显示: 整数直接显示整数, 否则保留一位小数（不四舍五入虚高, 显示实际估算值）。 */
+    private static String formatIntensity(double felt) {
+        if (felt < 0) felt = 0;
+        if (felt == Math.floor(felt) && !Double.isInfinite(felt)) {
+            return String.valueOf((int) felt);
+        }
+        return String.format("%.1f", felt);
     }
 
     /** 中国烈度等级 → 感受描述 */
