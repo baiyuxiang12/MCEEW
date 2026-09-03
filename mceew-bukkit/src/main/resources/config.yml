@@ -240,6 +240,22 @@ Countdown:
       7: "&4{region} &bM{mag} &7| 你处烈度 &4{intensity}&7({intensity_desc}) &7| &b预计 {seconds}s &7后到达，请立即逃生，远离一切建筑物"
     # 强震 Title 重复刷新间隔（秒）：1 = 每秒刷新倒计时，0 = 只发一次
     strong-repeat-seconds: 1
+  # 倒计时声音（配合资源包自定义音效，如 CraftEngine 资源包的 yujing:tick / yujing:red）
+  # 音频文件由资源包提供（.ogg, 放 assets/<命名空间>/sounds/），key 格式: <命名空间>:<事件名>
+  sound:
+    enable: false
+    # 每秒滴答声（倒计时刷新时播一次，0.5s 左右的短"滴"声）
+    tick: "yujing:tick"
+    # 触发时按玩家位置烈度播放的预警播报（语音），档位向下取整匹配
+    announce:
+      enable: false
+      "3": "yujing:blue"
+      "4": "yujing:blue"
+      "5": "yujing:yellow"
+      "6": "yujing:orange"
+      "7": "yujing:red"
+    volume: 1.0
+    pitch: 1.0
 
 # Do not change this value
 config-version: 9

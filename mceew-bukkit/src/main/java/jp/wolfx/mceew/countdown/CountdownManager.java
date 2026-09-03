@@ -87,6 +87,13 @@ public final class CountdownManager {
     private final java.util.TreeMap<Integer, String> strongTitles = new java.util.TreeMap<>();
     private final java.util.TreeMap<Integer, String> strongSubtitles = new java.util.TreeMap<>();
     private long strongRepeatMs;
+    // 倒计时声音: 每秒滴答 + 触发时按烈度播报 (资源包自定义音效)
+    private boolean soundEnable;
+    private String tickSound; // 每秒滴答音效 key, 空 = 不播
+    private boolean announceEnable;
+    private final java.util.TreeMap<Integer, String> announceSounds = new java.util.TreeMap<>(); // 烈度档 → 播报音效 key
+    private float soundVolume;
+    private float soundPitch;
     private boolean logUnknownIp;
     private double[] fallbackLocation; // used when IP lookup yields no coordinates (null = disabled)
     private String fallbackIp; // non-null when fallback-location is configured as an IP address
@@ -212,6 +219,26 @@ public final class CountdownManager {
                         "&4{region} &bM{mag} &7| 你处烈度 &4{intensity}&7({intensity_desc}) &7| &b预计 {seconds}s &7后到达，请立即逃生，远离一切建筑物")));
         // 强震 Title 重复刷新间隔（秒），0 = 只发一次；默认 1 = 每秒刷新倒计时
         strongRepeatMs = (long) (plugin.getConfig().getDouble("Countdown.bossbar.strong-repeat-seconds", 1.0) * 1000);
+
+        // 倒计时声音（配合资源包自定义音效，如 CE 资源包 yujing:tick / yujing:red ...）
+        soundEnable = plugin.getConfig().getBoolean("Countdown.sound.enable", false);
+        tickSound = plugin.getConfig().getString("Countdown.sound.tick", "");
+        announceEnable = plugin.getConfig().getBoolean("Countdown.sound.announce.enable", false);
+        soundVolume = (float) plugin.getConfig().getDouble("Countdown.sound.volume", 1.0);
+        soundPitch = (float) plugin.getConfig().getDouble("Countdown.sound.pitch", 1.0);
+        announceSounds.clear();
+        for (String tier : new String[]{"3", "4", "5", "6", "7"}) {
+            String key = plugin.getConfig().getString("Countdown.sound.announce." + tier, "");
+            if (key != null && !key.isBlank()) {
+                try {
+                    announceSounds.put(Integer.parseInt(tier), key.trim());
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        if (soundEnable) {
+            logger.info("Countdown sound enabled: tick='" + tickSound + "' announce=" + announceEnable);
+        }
 
         cityCoords.clear();
         try (InputStream in = plugin.getResource("city_coords.json")) {
@@ -452,6 +479,7 @@ public final class CountdownManager {
                 + "km, felt " + String.format("%.1f", feltIntensity)
                 + ", travel " + String.format("%.1f", travelSeconds) + "s, ETA " + (etaMs / 1000.0) + "s"
                 + (titleOnly ? " [TITLE-ONLY]" : " [BOSS-BAR]"));
+        final double feltForSound = feltIntensity;
         scheduler.runGlobal(() -> {
             active.put(player.getUniqueId(), cd);
             ensureTicker();
@@ -459,7 +487,30 @@ public final class CountdownManager {
                 long secs = Math.max(0, (cd.endEpochMs - System.currentTimeMillis()) / 1000);
                 player.sendTitle(titleFor(cd.feltIntensity), renderTemplate(subtitleFor(cd.feltIntensity), cd, secs), 5, 60, 5);
             }
+            // 触发时按烈度播一次预警播报音（资源包自定义音效）
+            playAnnounce(player, feltForSound);
         });
+    }
+
+    /** 触发时按玩家位置烈度播对应档位的预警播报音一次。 */
+    private void playAnnounce(Player player, double feltIntensity) {
+        if (!soundEnable || !announceEnable || announceSounds.isEmpty()) {
+            return;
+        }
+        Integer tier = announceSounds.floorKey((int) Math.floor(feltIntensity));
+        if (tier == null) {
+            tier = announceSounds.lastKey();
+        }
+        String key = announceSounds.get(tier);
+        if (key == null || key.isBlank()) {
+            return;
+        }
+        try {
+            player.playSound(player.getLocation(), key.trim(),
+                    org.bukkit.SoundCategory.PLAYERS, soundVolume, soundPitch);
+        } catch (Exception e) {
+            logger.warning("Failed to play announce sound " + key + ": " + e.getMessage());
+        }
     }
 
     /** 解析 "省|市|区" 名称 → 坐标（逐级降级匹配）。返回 {lat, lon} 或 null。 */
@@ -703,6 +754,15 @@ public final class CountdownManager {
                     player.sendMessage(renderTemplate(arriveChat, cd, 0));
                 }
                 continue;
+            }
+            // 每秒滴答声: 倒计时刷新时播放（每秒一次，配合 ticker 频率）
+            if (soundEnable && tickSound != null && !tickSound.isBlank()) {
+                try {
+                    player.playSound(player.getLocation(), tickSound.trim(),
+                            org.bukkit.SoundCategory.PLAYERS, soundVolume, soundPitch);
+                } catch (Exception e) {
+                    logger.warning("Failed to play tick sound " + tickSound + ": " + e.getMessage());
+                }
             }
             // titleOnly 模式：只保留到达提示，不创建/更新 BossBar；
             // 强震 Title 按 strongRepeatMs 间隔重复刷新（带最新剩余秒数）
