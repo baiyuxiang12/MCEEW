@@ -150,10 +150,11 @@ public final class CountdownManager {
             maxDistanceByMag.put(10.0, 6000.0);
         }
         attenuationEnabled = plugin.getConfig().getBoolean("Countdown.intensity-attenuation.enable", true);
-        attA = plugin.getConfig().getDouble("Countdown.intensity-attenuation.a", 3.0);
-        attB = plugin.getConfig().getDouble("Countdown.intensity-attenuation.b", 1.5);
-        attC = plugin.getConfig().getDouble("Countdown.intensity-attenuation.c", -2.058);
-        attD = plugin.getConfig().getDouble("Countdown.intensity-attenuation.d", 10.0);
+        // 小米手机地震预警口径 (逆向 MIUI CalcCountdown): I = a + b*M + c*ln(水平距离+d)
+        attA = plugin.getConfig().getDouble("Countdown.intensity-attenuation.a", 2.941);
+        attB = plugin.getConfig().getDouble("Countdown.intensity-attenuation.b", 1.363);
+        attC = plugin.getConfig().getDouble("Countdown.intensity-attenuation.c", -1.494);
+        attD = plugin.getConfig().getDouble("Countdown.intensity-attenuation.d", 7.0);
         autoColor = plugin.getConfig().getBoolean("Countdown.bossbar.auto-color-by-intensity", true);
         ipDbPath = plugin.getConfig().getString("Countdown.ip-db-path", "plugins/MCEEW/ip2region.xdb");
         logUnknownIp = plugin.getConfig().getBoolean("Countdown.log-unknown-ip", false);
