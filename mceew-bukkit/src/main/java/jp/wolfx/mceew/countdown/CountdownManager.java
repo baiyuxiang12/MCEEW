@@ -44,6 +44,7 @@ public final class CountdownManager {
         final double feltIntensity;
         final boolean titleOnly;
         long lastStrongSentMs;
+        long lastTitleSec = -1; // 已显示 Title 的秒数(防重复/卡滞)
         long lastVoiceSec = -1; // 已报数的秒数(小米式逐秒报数去重)
 
         ActiveCountdown(long endEpochMs, long startEpochMs, double totalSeconds, double distanceKm, double depthKm,
@@ -234,7 +235,7 @@ public final class CountdownManager {
         soundVolume = (float) plugin.getConfig().getDouble("Countdown.sound.volume", 1.0);
         soundPitch = (float) plugin.getConfig().getDouble("Countdown.sound.pitch", 1.0);
         announceSounds.clear();
-        for (String tier : new String[]{"3", "4", "5", "6", "7"}) {
+        for (String tier : new String[]{"1", "2", "3", "4", "5", "6", "7"}) {
             String key = plugin.getConfig().getString("Countdown.sound.announce." + tier, "");
             if (key != null && !key.isBlank()) {
                 try {
@@ -468,9 +469,12 @@ public final class CountdownManager {
                     + "s <= 0, " + (int) Math.round(distanceKm) + "km)");
             ActiveCountdown cd0 = new ActiveCountdown(System.currentTimeMillis(), System.currentTimeMillis(), travelSeconds,
                     distanceKm, depthKm, regionName, magnitude, feltIntensity, false);
+            final double feltBlind = feltIntensity;
             scheduler.runGlobal(() -> {
                 if (onArriveTitle) {
-                    player.sendTitle(arriveTitle, renderTemplate(arriveSubtitle, cd0, 0), 5, 40, 10);
+                    long tagDurMs = arriveTagDurationMs(feltBlind);
+                    int stay = (int) ((tagDurMs + 3000) / 50); // tick
+                    player.sendTitle(arriveTitle, renderTemplate(arriveSubtitle, cd0, 0), 5, Math.max(60, stay), 10);
                 }
                 if (arriveChat != null && !arriveChat.isEmpty()) {
                     player.sendMessage(renderTemplate(arriveChat, cd0, 0));
@@ -494,7 +498,8 @@ public final class CountdownManager {
             ensureTicker();
             if (titleOnly) {
                 long secs = Math.max(0, (cd.endEpochMs - System.currentTimeMillis()) / 1000);
-                player.sendTitle(titleFor(cd.feltIntensity), renderTemplate(subtitleFor(cd.feltIntensity), cd, secs), 5, 60, 5);
+                cd.lastTitleSec = secs;
+                player.sendTitle(titleFor(cd.feltIntensity), renderTemplate(subtitleFor(cd.feltIntensity), cd, secs), 0, 45, 0);
             }
             // 触发时按烈度播一次预警播报音（资源包自定义音效）
             playAnnounce(player, feltForSound);
@@ -505,25 +510,75 @@ public final class CountdownManager {
 
     /** 触发时按玩家位置烈度播对应档位的预警播报音一次。档位取整与 Title 显示一致（向下取整）。 */
     private void playAnnounce(Player player, double feltIntensity) {
-        if (!soundEnable || !announceEnable || announceSounds.isEmpty()) {
+        String key = announceKey(feltIntensity);
+        if (key == null) {
             return;
+        }
+        try {
+            player.playSound(player.getLocation(), key,
+                    org.bukkit.SoundCategory.PLAYERS, soundVolume, soundPitch);
+            logger.info("Announce sound: felt " + String.format("%.1f", feltIntensity)
+                    + " -> (" + key + ")");
+        } catch (Exception e) {
+            logger.warning("Failed to play announce sound " + key + ": " + e.getMessage());
+        }
+    }
+
+    /** 到达警报音总时长(ms): 烈度>=7 红 2次(每次约6s, 第二次在第一次播完后), 3~6 黄/橙 1次(6s), <3 蓝不响(0)。 */
+    private long arriveTagDurationMs(double feltIntensity) {
+        if (feltIntensity >= 7.0) {
+            return 6000L * 2;
+        }
+        if (feltIntensity >= 3.0) {
+            return 6000L;
+        }
+        return 0L;
+    }
+
+    /** 烈度 → announce 档位音效 key; 未启用/未知返回 null。 */
+    private String announceKey(double feltIntensity) {
+        if (!soundEnable || !announceEnable || announceSounds.isEmpty()) {
+            return null;
         }
         int rounded = (int) Math.floor(feltIntensity);
         Integer tier = announceSounds.floorKey(rounded);
         if (tier == null) {
-            tier = announceSounds.firstKey(); // 烈度低于最低档 → 播最低档（蓝）, 不误报最高档
+            tier = announceSounds.firstKey(); // 烈度低于最低档 → 最低档, 不误报最高档
         }
         String key = announceSounds.get(tier);
-        if (key == null || key.isBlank()) {
+        return (key == null || key.isBlank()) ? null : key.trim();
+    }
+
+    /**
+     * 到达提醒: 按烈度播放预警音(TAG)强调到达。
+     * 烈度>=7 红: 2次(小米同款强调); 烈度3~6 黄/橙: 1次; 烈度<3 蓝(告示性): 不响。
+     */
+    private void playArriveTag(final Player player, double feltIntensity) {
+        final String key = announceKey(feltIntensity);
+        if (key == null) {
             return;
         }
-        try {
-            player.playSound(player.getLocation(), key.trim(),
-                    org.bukkit.SoundCategory.PLAYERS, soundVolume, soundPitch);
-            logger.info("Announce sound: felt " + String.format("%.1f", feltIntensity)
-                    + " -> tier " + tier + " (" + key.trim() + ")");
-        } catch (Exception e) {
-            logger.warning("Failed to play announce sound " + key + ": " + e.getMessage());
+        int times;
+        if (feltIntensity >= 7.0) {
+            times = 2;
+        } else if (feltIntensity >= 3.0) {
+            times = 1;
+        } else {
+            return; // 蓝色低烈度: 不响到达音
+        }
+        for (int i = 0; i < times; i++) {
+            // 第二次等预警音播完(6s)再播, 避免重叠 (小米: TAG 间等 mMediaTime)
+            final long d = i * 6000L;
+            scheduler.runAsyncDelayed(() -> scheduler.runGlobal(() -> {
+                if (player.isOnline()) {
+                    try {
+                        player.playSound(player.getLocation(), key,
+                                org.bukkit.SoundCategory.PLAYERS, soundVolume, soundPitch);
+                    } catch (Exception e) {
+                        logger.warning("Arrive tag error: " + e.getMessage());
+                    }
+                }
+            }), d, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -810,7 +865,13 @@ public final class CountdownManager {
         scheduler.runGlobal(this::updateBossBars);
         tickerHandle = null;
         if (!active.isEmpty()) {
-            tickerHandle = scheduler.runAsyncDelayed(this::tick, 1, TimeUnit.SECONDS);
+            // 对齐到下一个秒边界触发, 使 Title/BossBar 每秒固定节奏刷新(不漂移)
+            long now = System.currentTimeMillis();
+            long delayMs = 1000 - (now % 1000);
+            if (delayMs < 100) {
+                delayMs += 1000;
+            }
+            tickerHandle = scheduler.runAsyncDelayed(this::tick, delayMs, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -830,11 +891,18 @@ public final class CountdownManager {
             if (remainMs <= 0) {
                 it.remove();
                 removeBar(entry.getKey());
+                // 到达 Title 停留 = 到达警报音播完 + 3 秒 (红2次/黄橙1次/蓝不响则基础3秒)
                 if (onArriveTitle) {
-                    player.sendTitle(arriveTitle, renderTemplate(arriveSubtitle, cd, 0), 5, 40, 10);
+                    long tagDurMs = arriveTagDurationMs(cd.feltIntensity);
+                    int stay = (int) ((tagDurMs + 3000) / 50); // tick
+                    player.sendTitle(arriveTitle, renderTemplate(arriveSubtitle, cd, 0), 5, Math.max(60, stay), 10);
                 }
                 if (arriveChat != null && !arriveChat.isEmpty()) {
                     player.sendMessage(renderTemplate(arriveChat, cd, 0));
+                }
+                // 小米式: 倒计时结束后按烈度播预警音(TAG)作为到达提醒
+                if (soundEnable && announceEnable) {
+                    playArriveTag(player, cd.feltIntensity);
                 }
                 continue;
             }
@@ -850,9 +918,13 @@ public final class CountdownManager {
             // 强震 Title 按 strongRepeatMs 间隔重复刷新（带最新剩余秒数）
             if (cd.titleOnly) {
                 if (strongRepeatMs > 0 && now - cd.lastStrongSentMs >= strongRepeatMs) {
-                    cd.lastStrongSentMs = now;
                     long secs = Math.max(0, (cd.endEpochMs - now) / 1000);
-                    player.sendTitle(titleFor(cd.feltIntensity), renderTemplate(subtitleFor(cd.feltIntensity), cd, secs), 5, 60, 5);
+                    // 只在秒数变化时重发, 停留 2.25s 覆盖每秒刷新间隔, Title 不消失不闪
+                    if (secs != cd.lastTitleSec) {
+                        cd.lastTitleSec = secs;
+                        cd.lastStrongSentMs = now;
+                        player.sendTitle(titleFor(cd.feltIntensity), renderTemplate(subtitleFor(cd.feltIntensity), cd, secs), 0, 45, 0);
+                    }
                 }
                 continue;
             }
