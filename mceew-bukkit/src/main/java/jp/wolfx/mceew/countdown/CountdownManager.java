@@ -133,7 +133,7 @@ public final class CountdownManager {
 
     /** Reads config, loads the ip database and the embedded city coordinate table. */
     public void load() {
-        enabled = plugin.getConfig().getBoolean("Countdown.enable", false);
+        enabled = plugin.getConfig().getBoolean("Countdown.enable", true);
         minMagnitude = plugin.getConfig().getDouble("Countdown.min-magnitude", 4.0);
         minIntensity = plugin.getConfig().getDouble("Countdown.min-intensity", 1.0);
         maxDistanceKm = plugin.getConfig().getDouble("Countdown.max-distance-km", 500.0);

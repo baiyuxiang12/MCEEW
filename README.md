@@ -34,7 +34,7 @@ Velocity, BungeeCord, and Waterfall proxy networks.
 
 ```yaml
 Countdown:
-  enable: true                    # 总开关（必须显式写 true）
+  enable: true                    # 总开关（默认 true，新装即生效）
   min-magnitude: 4.0              # 低于该震级不提醒
   min-intensity: 1.0              # 玩家位置预估烈度低于该值不提醒
   max-distance-km: 500            # 基础最大提醒距离
