@@ -20,7 +20,8 @@ Velocity, BungeeCord, and Waterfall proxy networks.
 * **分级措辞**：烈度 3 有感 / 4 明显 / 5 较强 / 6 强震 / 7 毁灭性，避免小题大做
 * **智能过滤**：距离过滤随震级放宽（M4 → 250km … M10 → 6000km）、低烈度过滤、
   盲区兜底（近震中立即提示"已到达"）
-* **倒计时语音（可选资源包）**：触发播预警音（按国标蓝/黄/橙/红）+ 逐秒中文报数，自带提示音素材；不装资源包则无声，不影响倒计时
+* **倒计时声音**：默认用游戏自带音效"滴滴"（无需资源包，触发连响 + 逐秒滴 + 到达强调）；
+  可选资源包中文语音报数（按国标蓝/黄/橙/红 + 逐秒报数），不装资源包也有声
 * **多源支持**：日本 / 四川 / 福建 / 台湾 / 中国国家台网 / 重庆 的 EEW 均可触发
 
 ### 安装
@@ -68,18 +69,25 @@ Countdown:
 个人开发者配额约 6000 次/天（各接口独立），本插件用量为"玩家数/天"，远低于配额；
 配额满或失败时自动降级离线表，倒计时功能不受影响。
 
-### 倒计时语音（可选资源包）
+### 倒计时声音
 
-模仿手机地震预警的播报：触发时按国标播放预警音（烈度 <3 蓝 / 3-4 黄 / 5-6 橙 / 7+ 红），
-预警音播完后**逐秒中文报数**剩余秒数。语音素材（数字 1~10、间隔音、预警音）随
-`MCEEW-yujing-sounds` 资源包提供（Release 附件）。
+两种模式（`Countdown.sound.enable` 切换）：
 
-**不装资源包 = 完全无声**，倒计时照常工作；装好后再在 config.yml 开启：
+* **`enable: false`（默认）— 游戏自带音效"滴滴"，无需任何资源包**：触发时按烈度用原版音效
+  连响（蓝 2 声 / 黄 3 声 / 橙 4 声 / 红 5 声），随后**每秒一声"滴"**，到达再强调一次。
+  默认用 `block.note_block.pling`（音符盒叮声），可换 `vanilla-tick-key` / `vanilla-announce-key`
+  改成任意原版音效（如 `ui.button.click`）。设 `vanilla-fallback: false` 恢复完全静音。
+* **`enable: true` — 中文语音报数**：需玩家应用自定义资源包（见下），触发按烈度播国标
+  蓝/黄/橙/红预警音（烈度 <3 蓝 / 3-4 黄 / 5-6 橙 / 7+ 红），预警音播完后**逐秒中文报数**。
+  语音素材（数字 1~10、间隔音、预警音）随 `MCEEW-yujing-sounds` 资源包提供（Release 附件）。
 
 ```yaml
 Countdown:
-  sound:                    # 倒计时声音（可选）
-    enable: false           # ← 装好资源包后改为 true
+  sound:                    # 倒计时声音
+    enable: false           # false=原版"滴滴"(无需资源包)  true=资源包中文语音
+    vanilla-fallback: true  # enable:false 时的原版降级总开关; false=完全静音
+    vanilla-tick-key: "minecraft:block.note_block.pling"     # 逐秒"滴"声
+    vanilla-announce-key: "minecraft:block.note_block.pling" # 触发/到达预警音(按烈度连响)
     namespace: "yujing"     # 数字/间隔音事件的命名空间（换资源包改这里）
     tick: "yujing:tick"     # 逐秒中文报数开关：非空启用，留空 = 只播预警音
     tick-delay-seconds: 6.5 # 报数延迟：等预警音播完再开始（秒）

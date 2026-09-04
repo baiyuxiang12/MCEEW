@@ -240,11 +240,20 @@ Countdown:
       7: "&4{region} &bM{mag} &7| 你处烈度 &4{intensity}&7({intensity_desc}) &7| &b预计 {seconds}s &7后到达，请立即逃生，远离一切建筑物"
     # 强震 Title 重复刷新间隔（秒）：1 = 每秒刷新倒计时，0 = 只发一次
     strong-repeat-seconds: 1
-  # 倒计时声音（可选资源包功能）: 关闭时完全无声, 不影响倒计时。
+  # 倒计时声音（可选）:
+  #   enable: true  = 用资源包自定义音效（需玩家应用对应资源包, 如 CraftEngine 资源包）
+  #   enable: false = 自动降级为游戏自带音效"滴滴"（无需资源包, 见 vanilla-fallback）
   # 需要自定义声音资源包提供音效事件(如 CraftEngine 资源包: 数字 one~ten + di/didi/non +
   # 预警音 tag0~tag4), 事件 key 格式: <命名空间>:<事件名>
   sound:
     enable: false
+    # 原版音效降级: enable: false 时不再静音, 自动用下方游戏自带音效"滴滴";
+    # 设 false = 完全静音(旧行为)。降级行为: 触发按烈度连响 + 每秒一声"滴" + 到达强调。
+    vanilla-fallback: true
+    # 降级用逐秒"滴"声(原版音效 key, 客户端都有; 可换 ui.button.click 等)
+    vanilla-tick-key: "minecraft:block.note_block.pling"
+    # 降级用触发/到达预警音(原版音效 key), 按烈度连响次数区分 (蓝2 黄3 橙4 红5 声)
+    vanilla-announce-key: "minecraft:block.note_block.pling"
     # 数字/间隔音事件的命名空间(对应资源包的命名空间), 不装资源包就保持 enable: false
     namespace: "yujing"
     # 逐秒中文报数开关: 非空启用(资源包需含 one~ten/di/didi/non), 留空 = 只播 announce 不报数

@@ -103,6 +103,10 @@ public final class CountdownManager {
     private final java.util.TreeMap<Integer, String> announceSounds = new java.util.TreeMap<>(); // 烈度档 → 播报音效 key
     private float soundVolume;
     private float soundPitch;
+    // 原版音效降级: 资源包声音关闭(enable=false)时自动用游戏自带音效"滴滴", 不装资源包也能响
+    private boolean vanillaFallback;
+    private String vanillaTickKey; // 逐秒"滴"的原版音效 key (如 minecraft:block.note_block.pling)
+    private String vanillaAnnounceKey; // 触发预警音的原版音效 key, 按烈度连响次数区分
     private boolean logUnknownIp;
     private double[] fallbackLocation; // used when IP lookup yields no coordinates (null = disabled)
     private String fallbackIp; // non-null when fallback-location is configured as an IP address
@@ -241,6 +245,12 @@ public final class CountdownManager {
         announceEnable = plugin.getConfig().getBoolean("Countdown.sound.announce.enable", false);
         soundVolume = (float) plugin.getConfig().getDouble("Countdown.sound.volume", 1.0);
         soundPitch = (float) plugin.getConfig().getDouble("Countdown.sound.pitch", 1.0);
+        // 原版音效降级: enable=false 时自动播游戏自带"滴滴"(无需资源包), 可设 false 恢复完全静音
+        vanillaFallback = plugin.getConfig().getBoolean("Countdown.sound.vanilla-fallback", true);
+        vanillaTickKey = plugin.getConfig().getString("Countdown.sound.vanilla-tick-key",
+                "minecraft:block.note_block.pling");
+        vanillaAnnounceKey = plugin.getConfig().getString("Countdown.sound.vanilla-announce-key",
+                "minecraft:block.note_block.pling");
         announceSounds.clear();
         for (String tier : new String[]{"1", "2", "3", "4", "5", "6", "7"}) {
             String key = plugin.getConfig().getString("Countdown.sound.announce." + tier, "");
@@ -253,6 +263,9 @@ public final class CountdownManager {
         }
         if (soundEnable) {
             logger.info("Countdown sound enabled: tick='" + tickSound + "' announce=" + announceEnable);
+        } else if (vanillaFallback) {
+            logger.info("Countdown sound: resource-pack sounds off -> vanilla fallback ON"
+                    + " (tick='" + vanillaTickKey + "' announce='" + vanillaAnnounceKey + "')");
         }
 
         cityCoords.clear();
@@ -515,9 +528,12 @@ public final class CountdownManager {
     }
 
     /** 触发时按玩家位置烈度播对应档位的预警播报音一次。档位取整与 Title 显示一致（向下取整）。 */
-
-    /** 触发时按玩家位置烈度播对应档位的预警播报音一次。档位取整与 Title 显示一致（向下取整）。 */
     private void playAnnounce(Player player, double feltIntensity) {
+        if (vanillaFallbackActive()) {
+            // 原版音效降级: 触发时按烈度连响(2~5 声)提示, 无需资源包
+            playVanillaBurst(player, vanillaAnnounceKey, announceBurstCount(feltIntensity), 400L, 0L);
+            return;
+        }
         String key = announceKey(feltIntensity);
         if (key == null) {
             return;
@@ -529,6 +545,49 @@ public final class CountdownManager {
                     + " -> (" + key + ")");
         } catch (Exception e) {
             logger.warning("Failed to play announce sound " + key + ": " + e.getMessage());
+        }
+    }
+
+    /** 原版音效降级激活: 资源包声音关闭(enable=false)且未显式禁用 fallback。 */
+    private boolean vanillaFallbackActive() {
+        return !soundEnable && vanillaFallback;
+    }
+
+    /** 原版连响次数: 烈度 <3 蓝 2 声 / 3-4 黄 3 声 / 5-6 橙 4 声 / 7+ 红 5 声。 */
+    private int announceBurstCount(double feltIntensity) {
+        int f = (int) Math.floor(feltIntensity);
+        if (f >= 7) return 5;
+        if (f >= 5) return 4;
+        if (f >= 3) return 3;
+        return 2;
+    }
+
+    /** 按间隔依次播 count 声原版音效(调度链), startDelayMs 为总起始偏移。 */
+    private void playVanillaBurst(final Player player, final String key, int count, long gapMs, long startDelayMs) {
+        if (key == null || key.isBlank()) return;
+        for (int i = 0; i < count; i++) {
+            final long d = startDelayMs + i * gapMs;
+            scheduler.runAsyncDelayed(() -> scheduler.runGlobal(() -> {
+                if (player.isOnline()) {
+                    try {
+                        player.playSound(player.getLocation(), key,
+                                org.bukkit.SoundCategory.PLAYERS, soundVolume, soundPitch);
+                    } catch (Exception e) {
+                        logger.warning("Vanilla sound error: " + e.getMessage());
+                    }
+                }
+            }), d, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /** 原版到达强调: 烈度>=7 红两轮连响(间隔2s), 3-6 一轮, <3 不响。 */
+    private void playVanillaArriveTag(Player player, double feltIntensity) {
+        int f = (int) Math.floor(feltIntensity);
+        if (f < 3) return;
+        int count = f >= 7 ? 5 : 3;
+        int rounds = f >= 7 ? 2 : 1;
+        for (int r = 0; r < rounds; r++) {
+            playVanillaBurst(player, vanillaAnnounceKey, count, 400L, r * 2000L);
         }
     }
 
@@ -653,6 +712,17 @@ public final class CountdownManager {
 
     private void playVoice(Player player, String key) {
         player.playSound(player.getLocation(), key, org.bukkit.SoundCategory.PLAYERS, soundVolume, soundPitch);
+    }
+
+    /** 原版音效降级: 播一声"滴"(每秒一次, 无需资源包)。 */
+    private void playVanillaTick(Player player) {
+        if (vanillaTickKey == null || vanillaTickKey.isBlank()) return;
+        try {
+            player.playSound(player.getLocation(), vanillaTickKey,
+                    org.bukkit.SoundCategory.PLAYERS, soundVolume, soundPitch);
+        } catch (Exception e) {
+            logger.warning("Vanilla tick error: " + e.getMessage());
+        }
     }
 
     private static String digitKey(int n) {
@@ -968,12 +1038,24 @@ public final class CountdownManager {
                 // 小米式: 倒计时结束后按烈度播预警音(TAG)作为到达提醒
                 if (soundEnable && announceEnable) {
                     playArriveTag(player, cd.feltIntensity);
+                } else if (vanillaFallbackActive()) {
+                    playVanillaArriveTag(player, cd.feltIntensity);
                 }
                 continue;
             }
             // 每秒报数: 预警音后(tickDelayMs)开始, 每秒播剩余秒数的中文数字(300ms 间隔序列);
             // 剩余 >99 秒时不逐秒报数字, 只播间隔音(滴滴, 小米 >99 秒播提示音)
-            if (soundEnable && now - cd.startEpochMs >= tickDelayMs && tickSound != null && !tickSound.isBlank()) {
+            if (vanillaFallbackActive()) {
+                // 原版音效降级: 触发连响播完(依烈度 0.4~1.6s)后开始, 每秒一声"滴" (<=99s), >99s 不逐秒
+                long burstEndMs = (announceBurstCount(cd.feltIntensity) - 1) * 400L + 500L;
+                if (now - cd.startEpochMs >= burstEndMs) {
+                    long remainSecs = (cd.endEpochMs - now) / 1000;
+                    if (remainSecs > 0 && remainSecs <= 99 && remainSecs != cd.lastVoiceSec) {
+                        cd.lastVoiceSec = remainSecs;
+                        playVanillaTick(player);
+                    }
+                }
+            } else if (soundEnable && now - cd.startEpochMs >= tickDelayMs && tickSound != null && !tickSound.isBlank()) {
                 long remainSecs = (cd.endEpochMs - now) / 1000;
                 if (remainSecs > 0 && remainSecs != cd.lastVoiceSec) {
                     cd.lastVoiceSec = remainSecs;
