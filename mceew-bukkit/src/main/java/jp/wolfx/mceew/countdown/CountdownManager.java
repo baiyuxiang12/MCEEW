@@ -19,7 +19,6 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -27,6 +26,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
@@ -121,7 +121,8 @@ public final class CountdownManager {
     private final Map<String, double[]> globalCountries = new HashMap<>(); // "CC" -> 国家中心坐标
     private final Map<String, String> countryCodeByName = new HashMap<>(); // 国家名（英文小写/中文）-> ISO 码
 
-    private final Map<UUID, ActiveCountdown> active = new HashMap<>();
+    /** 进行中的倒计时。写入在主线程（runGlobal），异步 tick 线程也会读取判空，故用并发容器。 */
+    private final Map<UUID, ActiveCountdown> active = new ConcurrentHashMap<>();
     private final Map<UUID, BossBar> playerBars = new HashMap<>();
     private PlatformScheduler.TaskHandle tickerHandle;
 
@@ -1001,8 +1002,21 @@ public final class CountdownManager {
         tickerHandle = scheduler.runAsyncDelayed(this::tick, 1, TimeUnit.SECONDS);
     }
 
+    /**
+     * 异步触发：立即跳回主线程执行"刷新 + 决定是否继续轮询"。
+     * <p>
+     * 原实现直接在异步线程里置空并重排 {@code tickerHandle}、判断 {@code active.isEmpty()}，
+     * 与主线程上的 {@link #ensureTicker()} 及 {@code active.put} 存在竞态：
+     * HashMap 跨线程读写可能损坏；tickerHandle 可能双排或漏排轮询链。
+     * 现在 {@code tickerHandle} 与 {@code active} 的所有读写都收敛到主线程。
+     */
     private void tick() {
-        scheduler.runGlobal(this::updateBossBars);
+        scheduler.runGlobal(this::tickOnMainThread);
+    }
+
+    /** 主线程：刷新所有倒计时显示，然后决定是否继续 250ms 轮询。 */
+    private void tickOnMainThread() {
+        updateBossBars();
         tickerHandle = null;
         if (!active.isEmpty()) {
             // 250ms 轮询: 主线程小延迟也不易吞秒(秒变化即发, 不受每秒节流限制)
